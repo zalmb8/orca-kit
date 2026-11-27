@@ -1,0 +1,5 @@
+# orca-kit:spec-review settings
+ticket_pattern: 'TODO-[0-9+'
+max_words: 2000
+secret_patterns:
+  - 'todo_live_[a-z0-9]{24}'

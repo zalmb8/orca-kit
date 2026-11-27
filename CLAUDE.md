@@ -11,7 +11,7 @@ A Claude Code plugin of personal skills and agents for driving AI software devel
 - `templates/skill/` — copy this to start a new skill.
 - `docs/<skill>/` — design and implementation plan for each skill (e.g. `docs/spec/ROADMAP.md`).
 - `skills/spec/check` and `skills/spec/tests/` — the spec checker and its tests: `python3 -m unittest discover -s skills/spec/tests`.
-- `skills/spec-review/findings` and `skills/spec-review/tests/` — the findings validator and its tests: `python3 -m unittest discover -s skills/spec-review/tests`.
+- `skills/spec-review/gate`, `skills/spec-review/findings` and `skills/spec-review/tests/` — the hard gates, the findings validator and their tests: `python3 -m unittest discover -s skills/spec-review/tests`.
 
 ## Conventions
 

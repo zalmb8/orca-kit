@@ -84,12 +84,12 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Failing fixtures for each malformed-finding case and a stdlib test runner: `python3 -m unittest discover -s skills/spec-review/tests`.
 - [x] **Done when:** the skill loads as `orca-kit:spec-review`, and malformed findings (bad severity, no location, no concrete question) are rejected with the reason.
 
-### v0.2: Hard gates
-- [ ] `skills/spec-review/gate` script, called through `${CLAUDE_PLUGIN_ROOT}`, running every gate and exiting non-zero on any failure.
-- [ ] Gates: the spec checker (`skills/spec/check --as accepted`), a secret and PII scan, every fenced `json` / `yaml` / OpenAPI block parses (and validates when it names a schema), traceability to a ticket when the repo requires it, and a length ceiling.
-- [ ] Repo settings in `.orca-kit/spec-review.yml` (ticket pattern, length ceiling, extra secret patterns), all optional with defaults.
-- [ ] Output in the spec checker's format: `<file>:<line>: <severity> [<gate>] <section>: <problem>. Fix: <what to do>.`
-- [ ] **Done when:** the same spec always gets the same result, and a failing fixture exists for each gate.
+### v0.2: Hard gates ✅
+- [x] `skills/spec-review/gate` script, called through `${CLAUDE_PLUGIN_ROOT}`, running every gate and exiting non-zero on any failure.
+- [x] Gates: the spec checker (`skills/spec/check --as accepted`), a secret and PII scan, every fenced `json` / `yaml` / OpenAPI block parses (and validates when it names a schema), traceability to a ticket when the repo requires it, and a length ceiling.
+- [x] Repo settings in `.orca-kit/spec-review.yml` (ticket pattern, length ceiling, extra secret patterns), all optional with defaults.
+- [x] Output in the spec checker's format: `<file>:<line>: <severity> [<gate>] <section>: <problem>. Fix: <what to do>.`
+- [x] **Done when:** the same spec always gets the same result, and a failing fixture exists for each gate.
 
 ### v0.3: Risk tiering and sign-off
 - [ ] A deterministic classifier in `gate --risk`: paths and terms for auth, permissions, migrations, data models, billing and public or breaking API changes, tunable in `.orca-kit/spec-review.yml`.
@@ -154,3 +154,16 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | The validator is written by hand; `findings.schema.json` documents the same format, and a test checks they agree | Stdlib only, no `jsonschema` install, and the two can't silently drift. |
 | A file that isn't JSON, or isn't a top-level array, exits 2; a rejected finding exits 1 | Matches the spec checker: 2 is a parse or usage error, 1 a rule failure. |
 | Problem lines name the finding as `finding #<n> (<id>)`, at the line of the offending field | The index finds a finding with no valid ID; the line lets an editor jump to it. |
+| Gate problems are named `<gate>.<rule>`; the spec checker's own rules pass through as `check.<rule>` | One output format for every gate, and a checker failure keeps the rule name `check --rules` documents. |
+| The `check` gate runs `check --as accepted` without `--repo` | The roadmap names that command; `--repo` adds only warnings, which `orca-kit:spec` already reports while writing. |
+| Exit 2 when the checker can't parse the spec or the settings file is invalid | Matches the checker and `findings`: 2 is a parse or usage error, 1 a rule failure. |
+| The secret and PII scan covers the whole file, frontmatter and code included, with fixed built-in patterns plus the repo's `secret_patterns` | A secret in a code block is still a secret; fixed regexes keep the scan deterministic. |
+| Placeholders (`<password>`, `${VAR}`), reserved example domains (`example.com`, `.test`), well-known test cards and international-format-only phone numbers aren't flagged; matched values are masked | Specs legitimately show placeholders and fake data; a gate that flags them gets ignored, and its output mustn't leak what it found. |
+| YAML is parsed by a small strict subset parser in the gate; a block using a feature outside it (anchors, tags, multiple documents, multi-line scalars) is a warning and isn't checked | Stdlib has no YAML. Guessing at unparsed YAML would make a pass dishonest, and failing valid YAML would make the gate wrong; the warning says which blocks went unchecked. |
+| The settings file is parsed with the same YAML subset, then checked strictly: only `ticket_pattern`, `max_words` and `secret_patterns`, with their types | One parser to document and test; an unknown key or wrong type is a typo, so it is an error, not ignored. |
+| An OpenAPI document is a ```` ```openapi ```` block, or a JSON or YAML block with a top-level `openapi` or `swagger` key; only its required top-level fields are checked | Full OpenAPI validation needs its meta-schema and a validator; required fields catch the common broken fragment. |
+| "Validates when it names a schema" means a top-level `"$schema"` naming a repo-relative file, checked with a JSON Schema subset; a URL `$schema` or an unsupported keyword is a warning | The gate is offline and deterministic, so it can't fetch schemas, and it says what it didn't check rather than passing it silently. |
+| Traceability is required exactly when `ticket_pattern` is set; a match anywhere in the body outside code counts | One setting, no separate on/off flag; the spec format has no ticket field, and this skill doesn't change the format. |
+| The length ceiling counts words in the body the way the checker's section budgets do, default 2000 | The example accepted spec is about 1200 words, and the checker's section budgets allow up to 2830; 2000 fails the skim test before the budgets do. |
+| The repo is the nearest directory at or above the spec with `.orca-kit/` or `.git`, or `--repo` | Specs live at `specs/<slug>.md`, so the settings are found with no flag; `--repo` covers anything else. |
+| Gate fixtures are `tests/fixtures/gate-<case>/`, each a small repo with its own settings and schema files | Each case is self-contained, and the findings fixtures stay as they are. |
