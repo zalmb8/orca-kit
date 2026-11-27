@@ -2,13 +2,21 @@
 """Check orca-kit:spec files against the rules for the status they claim.
 
 Usage:
-  check [--as STATUS] <spec.md> [<spec.md> ...]
+  check [--as STATUS] [--repo ROOT] <spec.md> [<spec.md> ...]
+  check --section HEADING <spec.md>
   check --rules
 
   --as STATUS   Check the content as if the spec claimed STATUS (idea, draft or
                 accepted). Refine uses `--as accepted` on a draft before asking
                 the user to accept it. The accepted_by/accepted_on rules are
                 skipped, because only the user's yes can satisfy them.
+  --repo ROOT   Also check the spec against the target repo at ROOT: linked
+                files and symbols exist, npm/yarn/pnpm/bun scripts, make
+                targets and just recipes exist, and an accepted spec isn't
+                older than the code it links to. These are warnings only.
+  --section HEADING
+                Print one `## HEADING` section of the spec, and exit. Agents
+                use it to load one section instead of the whole file.
   --rules       List the rules checked at each status, and exit.
 
 Prints one line per problem:
@@ -18,12 +26,16 @@ and `<file>: ok (<status>)` for a file with no errors.
 Exit codes: 0 every file passes, 1 a rule fails, 2 a usage or parse error.
 Warnings never change the exit code.
 
-Python 3 standard library only; no install step.
+Python 3 standard library only; no install step. `--repo` also uses git for
+its staleness check, and skips that check if git or the repo isn't there.
 """
 
 import datetime
+import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 from collections import namedtuple
 
@@ -45,16 +57,26 @@ WORD_BUDGETS = {
     "Verification Gate": 250,      # accepted: 68, for 6 ACs
 }
 
-# What an over-budget section is, at each status. An accepted spec is what an
-# agent loads, so it must fit; earlier statuses are still being written, and
-# done/superseded specs are no longer edited by this skill.
-BUDGET_SEVERITY = {
-    "idea": "warning",
-    "draft": "warning",
-    "accepted": "error",
-    "done": "warning",
-    "superseded": "warning",
+# Severity of the rules that aren't always errors, at each status. An accepted
+# spec is what an agent loads, so it must fit and be complete; earlier statuses
+# are still being written, and done/superseded specs are no longer edited by
+# this skill. Heuristic rules and the --repo rules are warnings everywhere.
+FINISHING = {"idea": "warning", "draft": "warning", "accepted": "error",
+             "done": "warning", "superseded": "warning"}
+ALWAYS_WARNING = dict((s, "warning") for s in FINISHING)
+RULE_SEVERITY = {
+    "budget": FINISHING,
+    "edge.categories": FINISHING,
+    "nongoal.path": ALWAYS_WARNING,
+    "verify.runner": ALWAYS_WARNING,
+    "repo.paths": ALWAYS_WARNING,
+    "repo.commands": ALWAYS_WARNING,
+    "repo.stale": ALWAYS_WARNING,
 }
+
+
+def severity(rule_id, status):
+    return RULE_SEVERITY.get(rule_id, {}).get(status, "error")
 
 # ---------------------------------------------------------------------------
 # Status rules: the single place that maps each status to the rules it must
@@ -79,30 +101,47 @@ RULE_TEXT = {
     "ac.only": "draft: every behavior is an AC",
     "ac.format": "v0.3: each AC has an ID (AC-n) and a Given/When/Then description",
     "ac.verify-or-tbd": "draft: every AC has a verify: line or a TBD: line",
+    "ac.example": "v0.7: an AC's example: line is '`<input>` -> <expected output>'",
     "edge.table": "v0.3: a required edge-case table",
     "edge.ac": "draft: every edge-case row points to an AC",
+    "edge.categories": "v0.7: invalid input, failure and state conflict each have a row or a Not applicable: line",
     "guard.labels": "draft: Non-goals:, Always:, Ask First:, Never: lists and a Decision Log:",
+    "nongoal.path": "v0.7: at least one non-goal names adjacent code by path",
+    "contract.labels": "v0.7: Interfaces & Data Contracts has Existing: and New: lists",
+    "contract.format": "v0.7: each Existing: item starts with a `path`; each New: item has code",
+    "gate.matches-acs": "v0.7: the Verification Gate has one entry per AC, in ID order, copying its verify: line",
+    "gate.suite": "v0.7: the gate's whole-suite commands are commands from Environment & Commands",
+    "verify.runner": "v0.7: each verify: command starts with a runner from Environment & Commands",
     # accepted row.
     "spec.filled": "accepted: all six sections are filled in",
     "ac.verify": "accepted: every AC has a verify: line",
     "guard.items": "accepted: Non-goals, Always, Ask First and Never each have at least one item",
     "guard.decisions": "accepted: the Decision Log has at least one entry with why:, rejected: and source: lines",
+    "contract.items": "v0.7: accepted: Existing: and New: have at least one item between them",
     "no-tbd": "accepted: no TBDs anywhere",
     "no-open-questions": "accepted: no open questions anywhere",
     # Word budgets (WORD_BUDGETS above).
     "budget": "word budget per section",
+    # With --repo ROOT only.
+    "repo.paths": "--repo: every Existing: path exists, and contains the symbols listed with it",
+    "repo.commands": "--repo: every npm/yarn/pnpm/bun script, make target and just recipe named exists",
+    "repo.stale": "--repo: accepted: no commit since the spec last changed touches the files it links to",
 }
 
 FRONTMATTER_RULES = ["frontmatter.fields", "frontmatter.id", "frontmatter.status", "frontmatter.dates"]
 
 DRAFT_CONTENT_RULES = [
-    "spec.sections", "ac.only", "ac.format", "ac.verify-or-tbd",
-    "edge.table", "edge.ac", "guard.labels", "budget",
+    "spec.sections", "ac.only", "ac.format", "ac.verify-or-tbd", "ac.example",
+    "edge.table", "edge.ac", "edge.categories", "guard.labels", "nongoal.path",
+    "contract.labels", "contract.format", "gate.matches-acs", "gate.suite",
+    "verify.runner", "budget",
 ]
 
 ACCEPTED_CONTENT_RULES = [
-    "spec.sections", "spec.filled", "ac.only", "ac.format", "ac.verify",
-    "edge.table", "edge.ac", "guard.labels", "guard.items", "guard.decisions",
+    "spec.sections", "spec.filled", "ac.only", "ac.format", "ac.verify", "ac.example",
+    "edge.table", "edge.ac", "edge.categories", "guard.labels", "guard.items",
+    "guard.decisions", "nongoal.path", "contract.labels", "contract.format",
+    "contract.items", "gate.matches-acs", "gate.suite", "verify.runner",
     "no-tbd", "no-open-questions", "budget",
 ]
 
@@ -115,6 +154,16 @@ STATUS_RULES = {
     # content are checked; unknown frontmatter fields are ignored.
     "done": FRONTMATTER_RULES + ["frontmatter.accepted"] + ACCEPTED_CONTENT_RULES,
     "superseded": FRONTMATTER_RULES + ["frontmatter.accepted"] + ACCEPTED_CONTENT_RULES,
+}
+
+# Rules added by `--repo ROOT`, per status. Staleness only matters once a spec
+# is accepted and being built against.
+REPO_RULES = {
+    "idea": [],
+    "draft": ["repo.paths", "repo.commands"],
+    "accepted": ["repo.paths", "repo.commands", "repo.stale"],
+    "done": [],
+    "superseded": [],
 }
 
 # Rules that only the user's yes can satisfy, skipped by `--as`.
@@ -137,8 +186,14 @@ SPEC_SECTIONS = (
     "Boundaries & Decision Log",
     "Verification Gate",
 )
-GOAL, BEHAVIOR, BOUNDARIES = SPEC_SECTIONS[0], SPEC_SECTIONS[3], SPEC_SECTIONS[4]
+GOAL, ENV, INTERFACES, BEHAVIOR, BOUNDARIES, GATE = SPEC_SECTIONS
 GUARD_LABELS = {GOAL: ("Non-goals",), BOUNDARIES: ("Always", "Ask First", "Never", "Decision Log")}
+GATE_PER_AC, GATE_SUITE = "Per acceptance criterion", "Whole suite, from Environment & Commands"
+CONTRACT_LABELS = ("Existing", "New")
+LABELS = dict(GUARD_LABELS)
+LABELS[INTERFACES] = CONTRACT_LABELS
+LABELS[GATE] = (GATE_PER_AC, GATE_SUITE)
+EDGE_CATEGORIES = ("Invalid input", "Failure", "State conflict")
 LIST_LABELS = ("Non-goals", "Always", "Ask First", "Never")
 DECISION_LINES = ("why", "rejected", "source")
 
@@ -156,6 +211,10 @@ AC_ID_RE = re.compile(r"\bAC-(\d+)\b")
 TBD_RE = re.compile(r"\bTBD\b")
 QUESTION_RE = re.compile(r"\?(?=\s|$|[|*)\]\"'_])")
 INLINE_CODE_RE = re.compile(r"(`+)(.+?)\1")
+GATE_ENTRY_RE = re.compile(r"^- AC-(\d+):\s*(.*)$")
+EXISTING_RE = re.compile(r"^- `([^`]+)`(?:\s*\(((?:`[^`]*`|[^)`])*)\))?")
+PATHLIKE_RE = re.compile(r"/|\.[A-Za-z0-9]{1,6}$")
+CHILD_LABEL_RE = re.compile(r"^\s+(verify|TBD|example)\b")
 
 Problem = namedtuple("Problem", "severity line section rule message fix")
 Line = namedtuple("Line", "no text code")
@@ -543,7 +602,7 @@ def check_ac_format(spec):
         else:
             seen[n] = it.line.no
         text = " ".join([it.line.text] + [c.text for c in it.children
-                                          if not re.match(r"^\s+(verify|TBD)\b", c.text)]).lower()
+                                          if not CHILD_LABEL_RE.match(c.text)]).lower()
         missing = [w for w in ("given", "when", "then") if not re.search(r"\b%s\b" % w, text)]
         if missing:
             yield it.line.no, BEHAVIOR, "AC-%d has no %s" % (n, "/".join(missing)), \
@@ -617,7 +676,7 @@ def labelled(spec, title):
     found, current = {}, None
     if sec is None:
         return sec, found
-    labels = GUARD_LABELS[title]
+    labels = LABELS[title]
     chunk = []
     for ln in sec.lines + [Line(None, "", False)]:
         label = None
@@ -681,6 +740,248 @@ def check_guard_decisions(spec):
                     "add an indented '%s:' line under D-%s" % (key, m.group(1))
 
 
+def code_spans(text):
+    return [m.group(2).strip() for m in INLINE_CODE_RE.finditer(text)]
+
+
+def item_text(it):
+    return " ".join([it.line.text] + [c.text for c in it.children if not c.code])
+
+
+def table_rows(table):
+    """The body rows of a table, after its header and separator."""
+    if len(table) > 1 and is_separator(table_cells(table[1].text)):
+        return table[2:]
+    return table[1:]
+
+
+def only_tbd(sec):
+    """True if a section holds nothing but TBD lines, as a draft may."""
+    lines = sec.text_lines()
+    return bool(lines) and all(re.match(r"^(?:- )?TBD\b", ln.text.strip()) for ln in lines)
+
+
+def env_commands(spec):
+    """(line, command) for every command Environment & Commands names.
+
+    A command is an inline code span on a text line, or a line inside a fence.
+    """
+    sec = spec.section(ENV)
+    found = []
+    if sec is None:
+        return found
+    for ln in sec.lines:
+        if ln.code:
+            if not FENCE_RE.match(ln.text) and ln.text.strip():
+                found.append((ln, ln.text.strip()))
+        else:
+            found.extend((ln, s) for s in code_spans(ln.text))
+    return found
+
+
+def tokens(cmd):
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+
+def ac_check_lines(it):
+    """(verify, has_tbd) for an AC item: its verify: (line, value) and whether it has a TBD: line."""
+    verify = child_value(it, "verify")
+    tbd = any(re.match(r"^\s+TBD[:.]", c.text) for c in it.children if not c.code)
+    return verify, tbd
+
+
+@rule("ac.example")
+def check_ac_example(spec):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    for n, it in acs:
+        for ln in it.children:
+            m = re.match(r"^\s+example:\s*(.*)$", ln.text)
+            if ln.code or not m:
+                continue
+            value = m.group(1).strip()
+            masked = INLINE_CODE_RE.sub(lambda c: "x" * len(c.group(0)), value)
+            arrow = re.search(r"→|->", masked)
+            if not arrow or not code_spans(value[:arrow.start()]) or not value[arrow.end():].strip():
+                yield ln.no, BEHAVIOR, "AC-%d's example: line isn't '`<input>` → <expected output>'" % n, \
+                    "write it as 'example: `<exact input or command>` → <expected result, with literal output in backticks>'"
+
+
+@rule("edge.categories")
+def check_edge_categories(spec):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    if sec is None or not tables:
+        return
+    covered = set()
+    for table in tables:
+        for ln in table_rows(table):
+            cells = table_cells(ln.text)
+            first = cells[0].lower() if cells else ""
+            covered.update(c for c in EDGE_CATEGORIES if first.startswith(c.lower()))
+    for ln in sec.text_lines():
+        if ln.text.startswith("Not applicable:"):
+            covered.update(c for c in EDGE_CATEGORIES if c.lower() in ln.text.lower())
+    missing = [c for c in EDGE_CATEGORIES if c not in covered]
+    if missing:
+        yield tables[0][0].no, BEHAVIOR, "the edge-case table doesn't cover %s" % ", ".join(c.lower() for c in missing), \
+            "add a row starting '%s:', or say why it can't happen in a 'Not applicable: <category> (<reason>).' line under the table" % missing[0]
+
+
+@rule("nongoal.path")
+def check_nongoal_path(spec):
+    sec, found = labelled(spec, GOAL)
+    if "Non-goals" not in found or not found["Non-goals"][1]:
+        return
+    line, entries = found["Non-goals"]
+    for it in entries:
+        if any(PATHLIKE_RE.search(s) for s in code_spans(item_text(it))):
+            return
+    yield line, GOAL, "no non-goal names adjacent code by path", \
+        "name the adjacent code an agent might be tempted to change, by path: 'Changing `src/<module>`'"
+
+
+@rule("contract.labels")
+def check_contract_labels(spec):
+    sec, found = labelled(spec, INTERFACES)
+    if sec is None or only_tbd(sec):
+        return
+    for lab in CONTRACT_LABELS:
+        if lab not in found:
+            yield sec.line, INTERFACES, "no '%s:' list" % lab, \
+                "add the '%s:' label followed by its list, as in template-spec.md" % lab
+
+
+@rule("contract.format")
+def check_contract_format(spec):
+    sec, found = labelled(spec, INTERFACES)
+    for lab in CONTRACT_LABELS:
+        for it in found.get(lab, (None, []))[1]:
+            if re.match(r"^- TBD\b", it.line.text):
+                continue
+            if lab == "Existing" and not EXISTING_RE.match(it.line.text):
+                yield it.line.no, INTERFACES, "Existing: item doesn't start with a `path`", \
+                    "start it with the repo-relative path in backticks, then its symbols: '- `src/types.ts` (`Todo`): why it matters'"
+            if lab == "New" and not code_spans(item_text(it)) and not any(c.code for c in it.children):
+                yield it.line.no, INTERFACES, "New: item states no contract in code", \
+                    "give the signature, type, schema or CLI usage in backticks or a fenced block, in terms of the existing types"
+
+
+@rule("contract.items")
+def check_contract_items(spec):
+    sec, found = labelled(spec, INTERFACES)
+    if sec is None or any(lab not in found for lab in CONTRACT_LABELS):
+        return
+    if not found["Existing"][1] and not found["New"][1]:
+        yield found["Existing"][0], INTERFACES, "Existing: and New: have no items", \
+            "link the existing files and types the goal builds on, and state the new contracts"
+
+
+@rule("gate.matches-acs")
+def check_gate_matches_acs(spec):
+    _, acs, _, _, malformed = spec.behavior()
+    sec, found = labelled(spec, GATE)
+    ids = [n for n, _ in acs]
+    if sec is None or not acs or only_tbd(sec) or malformed or len(set(ids)) != len(ids):
+        return  # nothing to compare yet, or ac.format reports the ACs first
+    if GATE_PER_AC not in found:
+        yield sec.line, GATE, "no '%s:' list" % GATE_PER_AC, \
+            "add it, with one '- AC-n: `<verify command>`' entry per AC, as acceptance-criteria.md says"
+        return
+    line, entries = found[GATE_PER_AC]
+    by_id = {}
+    for n, it in acs:
+        by_id.setdefault(n, it)
+    seen, order = set(), []
+    for it in entries:
+        m = GATE_ENTRY_RE.match(it.line.text)
+        if not m:
+            yield it.line.no, GATE, "gate entry isn't '- AC-n: <verify command>'", \
+                "write it as '- AC-n: `<the AC's verify command>`'"
+            continue
+        n, value = int(m.group(1)), m.group(2).strip()
+        if n in seen:
+            yield it.line.no, GATE, "AC-%d is listed twice" % n, "keep one entry per AC"
+            continue
+        seen.add(n)
+        order.append(n)
+        if n not in by_id:
+            yield it.line.no, GATE, "the gate lists AC-%d, which doesn't exist" % n, \
+                "remove the entry, or add AC-%d to Behavior & Edge Cases" % n
+            continue
+        verify, tbd = ac_check_lines(by_id[n])
+        if verify and verify[1]:
+            if value != verify[1]:
+                yield it.line.no, GATE, "AC-%d's gate entry doesn't match its verify: line" % n, \
+                    "copy the command exactly from AC-%d's verify: line, %s" % (n, verify[1])
+        elif tbd and not TBD_RE.match(value):
+            yield it.line.no, GATE, "AC-%d has a TBD: line but its gate entry isn't a TBD" % n, \
+                "copy AC-%d's TBD: line into its gate entry" % n
+    for n in sorted(by_id):
+        if n not in seen:
+            yield line, GATE, "AC-%d is missing from the gate" % n, \
+                "add '- AC-%d: <its verify command>' in ID order" % n
+    if order != sorted(order):
+        yield line, GATE, "gate entries aren't in AC ID order", "list them as AC-1, AC-2, and so on"
+
+
+@rule("gate.suite")
+def check_gate_suite(spec):
+    sec, found = labelled(spec, GATE)
+    commands = set(cmd for _, cmd in env_commands(spec))
+    if sec is None or not commands or only_tbd(sec):
+        return
+    if GATE_SUITE not in found:
+        yield sec.line, GATE, "no '%s:' list" % GATE_SUITE, \
+            "add it, listing the lint, typecheck, test and build commands from Environment & Commands"
+        return
+    line, entries = found[GATE_SUITE]
+    if not entries:
+        yield line, GATE, "the whole-suite list has no items", \
+            "list the whole-suite commands from Environment & Commands, without setup steps"
+    for it in entries:
+        if re.match(r"^- TBD\b", it.line.text):
+            continue
+        spans = code_spans(it.line.text)
+        if not spans:
+            yield it.line.no, GATE, "whole-suite entry has no command in backticks", \
+                "write it as '- `<command from Environment & Commands>`'"
+        for s in spans:
+            if s not in commands:
+                yield it.line.no, GATE, "`%s` isn't a command in Environment & Commands" % s, \
+                    "copy the command exactly from Environment & Commands, or add it there first"
+
+
+def runner_prefix(cmd):
+    """A command's runner: its first word, plus a subcommand word (`npm test`, `go test`)."""
+    tk = tokens(cmd)
+    while tk and re.match(r"^[A-Z_][A-Z0-9_]*=", tk[0]):
+        tk = tk[1:]
+    if len(tk) > 1 and re.match(r"^[a-z][\w:-]*$", tk[1]):
+        return tk[:2]
+    return tk[:1]
+
+
+@rule("verify.runner")
+def check_verify_runner(spec):
+    prefixes = [p for p in (runner_prefix(cmd) for _, cmd in env_commands(spec)) if p]
+    if not prefixes:
+        return
+    _, acs, _, _, _ = spec.behavior()
+    for n, it in acs:
+        verify, _ = ac_check_lines(it)
+        spans = code_spans(verify[1]) if verify else []
+        if not spans:
+            continue
+        tk = tokens(spans[0])
+        while tk and re.match(r"^[A-Z_][A-Z0-9_]*=", tk[0]):
+            tk = tk[1:]
+        if not any(tk[:len(p)] == p for p in prefixes):
+            yield verify[0].no, BEHAVIOR, "AC-%d's verify: command doesn't start with a runner from Environment & Commands" % n, \
+                "use the runner and filter syntax that Environment & Commands lists, or add the runner there"
+
+
 def body_lines(spec):
     for sec, ln in spec.all_lines():
         if not ln.code:
@@ -739,6 +1040,210 @@ def check_budget(spec):
                 "cut %d words: link to files instead of describing them, and drop prose that types and tests cover" % (words - budget)
 
 
+# ---------------------------------------------------------------------------
+# Rules that need the target repo (--repo ROOT). spec.repo is its real path.
+# ---------------------------------------------------------------------------
+
+def existing_items(spec):
+    """(line, path, [symbol]) for each Existing: item in Interfaces & Data Contracts."""
+    sec, found = labelled(spec, INTERFACES)
+    result = []
+    for it in found.get("Existing", (None, []))[1]:
+        m = EXISTING_RE.match(it.line.text)
+        if m:
+            path = re.sub(r":\d+(?:-\d+)?$", "", m.group(1).strip())
+            symbols = [re.sub(r"\(.*$", "", s).strip() for s in code_spans(m.group(2) or "")]
+            result.append((it.line, path, [s for s in symbols if s]))
+    return result
+
+
+def repo_path(spec, path):
+    """The file at a repo-relative path, or None if the path leaves the repo."""
+    if os.path.isabs(path) or ".." in path.split("/"):
+        return None
+    return os.path.join(spec.repo, path)
+
+
+@rule("repo.paths")
+def check_repo_paths(spec):
+    for ln, path, symbols in existing_items(spec):
+        full = repo_path(spec, path)
+        if full is None or not os.path.exists(full):
+            yield ln.no, INTERFACES, "`%s` doesn't exist in the repo" % path, \
+                "link the real repo-relative path, or move the item to New: if the build creates it"
+            continue
+        if os.path.isdir(full) or not symbols:
+            continue
+        try:
+            with open(full, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        for s in symbols:
+            name = re.split(r"[.#:]", s)[-1]
+            if not re.search(r"(?<![\w$])%s(?![\w$])" % re.escape(name), text):
+                yield ln.no, INTERFACES, "`%s` doesn't contain `%s`" % (path, s), \
+                    "link the file that defines `%s`, or correct the symbol's name" % s
+
+
+PM_BUILTINS = {
+    "add", "audit", "bin", "cache", "ci", "config", "create", "dedupe", "dlx", "exec", "i", "info",
+    "init", "install", "link", "list", "ls", "outdated", "pack", "prune", "publish", "rebuild",
+    "remove", "rm", "store", "unlink", "up", "update", "upgrade", "version", "why", "workspace",
+    "workspaces", "x",
+}
+
+
+def named_target(cmd):
+    """(kind, name) for a command that names a package script, make target or just recipe."""
+    tk = tokens(cmd)
+    while tk and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tk[0]):
+        tk = tk[1:]
+    if len(tk) < 2 or tk[1].startswith("-"):
+        return None
+    tool, first = tk[0], tk[1]
+    if tool == "npm":
+        if first in ("run", "run-script"):
+            return ("script", tk[2]) if len(tk) > 2 and not tk[2].startswith("-") else None
+        if first in ("test", "t", "start", "stop", "restart"):
+            return ("script", "test" if first == "t" else first)
+        return None
+    if tool in ("yarn", "pnpm"):
+        if first == "run":
+            return ("script", tk[2]) if len(tk) > 2 and not tk[2].startswith("-") else None
+        return None if first in PM_BUILTINS else ("script", first)
+    if tool == "bun":
+        if first == "run" and len(tk) > 2 and not PATHLIKE_RE.search(tk[2]):
+            return ("script", tk[2])
+        return None
+    if tool == "make" and "=" not in first:
+        return ("make", first)
+    if tool == "just":
+        return ("just", first)
+    return None
+
+
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def repo_targets(root):
+    """{kind: (file name, set of names) or None} for the repo's scripts, make targets and recipes."""
+    found = {"script": None, "make": None, "just": None}
+    text = read_text(os.path.join(root, "package.json"))
+    if text is not None:
+        try:
+            scripts = json.loads(text).get("scripts") or {}
+            found["script"] = ("package.json", set(scripts))
+        except (ValueError, AttributeError):
+            found["script"] = ("package.json", set())
+    for name in ("GNUmakefile", "makefile", "Makefile"):
+        text = read_text(os.path.join(root, name))
+        if text is not None:
+            names = set()
+            for m in re.finditer(r"^([^\s:=#][^:=#]*?)\s*::?(?!=)", text, re.M):
+                names.update(m.group(1).split())
+            found["make"] = (name, names)
+    for name in (".justfile", "Justfile", "justfile"):
+        text = read_text(os.path.join(root, name))
+        if text is not None:
+            names = set(re.findall(r"^@?([A-Za-z0-9_-]+)(?:\s[^:\n]*)?:(?!=)", text, re.M))
+            names.update(re.findall(r"^alias\s+([A-Za-z0-9_-]+)\s*:=", text, re.M))
+            found["just"] = (name, names)
+    return found
+
+
+def named_commands(spec):
+    """(line, section, command) for every command the spec names."""
+    for ln, cmd in env_commands(spec):
+        yield ln, ENV, cmd
+    _, acs, _, _, _ = spec.behavior()
+    for n, it in acs:
+        verify, _ = ac_check_lines(it)
+        if verify:
+            for s in code_spans(verify[1]):
+                yield verify[0], BEHAVIOR, s
+    sec = spec.section(GATE)
+    for ln in sec.text_lines() if sec else []:
+        for s in code_spans(ln.text):
+            yield ln, GATE, s
+
+
+KIND_NAMES = {"script": ("script", "a package.json"), "make": ("target", "a Makefile"), "just": ("recipe", "a justfile")}
+
+
+@rule("repo.commands")
+def check_repo_commands(spec):
+    targets = repo_targets(spec.repo)
+    reported = set()
+    for ln, section, cmd in named_commands(spec):
+        named = named_target(cmd)
+        if named is None or named in reported:
+            continue
+        kind, name = named
+        noun, missing_file = KIND_NAMES[kind]
+        have = targets[kind]
+        if have is not None and (name in have[1] or (kind == "make" and "%" in have[1])):
+            continue
+        reported.add(named)
+        where = "no %s '%s' in %s" % (noun, name, have[0]) if have else "the repo has no %s" % missing_file[2:]
+        yield ln.no, section, "`%s` names %s" % (cmd, where), \
+            "copy the command from package.json, the Makefile, the justfile or CI, as repo-scan.md says"
+
+
+def git(root, *args):
+    try:
+        result = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def linked_files(spec):
+    """Repo-relative paths of the existing files and directories the spec links to."""
+    candidates = [path for _, path, _ in existing_items(spec)]
+    sec = spec.section(INTERFACES)
+    for ln in sec.text_lines() if sec else []:
+        candidates.extend(code_spans(ln.text))
+    _, acs, _, _, _ = spec.behavior()
+    for n, it in acs:
+        verify, _ = ac_check_lines(it)
+        for s in code_spans(verify[1]) if verify else []:
+            candidates.extend(tokens(s))
+    found = set()
+    for c in candidates:
+        c = re.sub(r":\d+(?:-\d+)?$", "", c.strip())
+        full = repo_path(spec, c) if c and PATHLIKE_RE.search(c) else None
+        if full and os.path.exists(full):
+            found.add(c.rstrip("/"))
+    return sorted(found)
+
+
+@rule("repo.stale")
+def check_repo_stale(spec):
+    spec_path = os.path.realpath(spec.path)
+    if git(spec.repo, "status", "--porcelain", "--", spec_path) != "":
+        return  # not a git repo, git missing, or the spec has uncommitted changes
+    last = git(spec.repo, "log", "-1", "--format=%H", "--", spec_path)
+    paths = linked_files(spec)
+    if not last or not paths:
+        return
+    commits = git(spec.repo, "rev-list", last + "..HEAD", "--", *paths)
+    if not commits:
+        return
+    touched = git(spec.repo, "diff", "--name-only", last, "HEAD", "--", *paths) or ""
+    count = len(commits.split())
+    yield fm_line(spec, "updated"), "frontmatter", \
+        "%d commit%s since the spec last changed touch%s %s" % (
+            count, "" if count == 1 else "s", "es" if count == 1 else "",
+            ", ".join(touched.split()) or ", ".join(paths)), \
+        "sync the spec with update mode ('sync the spec') and commit it with the code"
+
+
 assert set(RULES) == set(RULE_TEXT), "every rule needs RULE_TEXT and a function"
 
 
@@ -746,8 +1251,8 @@ assert set(RULES) == set(RULE_TEXT), "every rule needs RULE_TEXT and a function"
 # Driver
 # ---------------------------------------------------------------------------
 
-def check_spec(spec, as_status=None):
-    """Return (status_checked, [Problem])."""
+def check_spec(spec, as_status=None, repo=None):
+    """Return (status_checked, [Problem]). With repo, also run that status's --repo rules."""
     problems = []
     claimed = spec.status
     status = as_status or claimed
@@ -756,10 +1261,12 @@ def check_spec(spec, as_status=None):
         rule_ids = [r for r in rule_ids if r not in ACCEPTANCE_RECORD_RULES]
     if status not in STATUS_RULES and "frontmatter.status" not in rule_ids:
         rule_ids.append("frontmatter.status")
+    if repo:
+        spec.repo = os.path.realpath(repo)
+        rule_ids += REPO_RULES.get(status, [])
     for rule_id in rule_ids:
-        severity = BUDGET_SEVERITY.get(status, "warning") if rule_id == "budget" else "error"
         for line, section, message, fix in RULES[rule_id](spec):
-            problems.append(Problem(severity, line, section, rule_id, message, fix))
+            problems.append(Problem(severity(rule_id, status), line, section, rule_id, message, fix))
     problems.sort(key=lambda p: (p.line, p.rule))
     return status, problems
 
@@ -769,78 +1276,127 @@ def format_problem(path, p):
     return "%s:%d: %s [%s] %s: %s. Fix: %s." % (path, p.line, p.severity, p.rule, p.section, p.message, fix)
 
 
-USAGE = "usage: check [--as idea|draft|accepted] <spec.md> [<spec.md> ...] | check --rules"
+def section_text(spec, title):
+    """The `## title` heading and its lines, without trailing blank lines, or None."""
+    sec = spec.section(title)
+    if sec is None:
+        return None
+    lines = ["## " + sec.title] + [ln.text for ln in sec.lines]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+USAGE = ("usage: check [--as idea|draft|accepted] [--repo ROOT] <spec.md> [<spec.md> ...]\n"
+         "       check --section HEADING <spec.md>\n"
+         "       check --rules")
 
 
 def print_rules():
     for status in STATUSES:
         print("%s:" % status)
         for rule_id in STATUS_RULES[status]:
-            severity = BUDGET_SEVERITY[status] if rule_id == "budget" else "error"
-            print("  %-24s %-7s %s" % (rule_id, severity, RULE_TEXT[rule_id]))
+            print("  %-24s %-7s %s" % (rule_id, severity(rule_id, status), RULE_TEXT[rule_id]))
+        for rule_id in REPO_RULES[status]:
+            print("  %-24s %-7s %s" % (rule_id, severity(rule_id, status), RULE_TEXT[rule_id]))
+
+
+def option_value(argv, i, name):
+    """The value of `--name VALUE` or `--name=VALUE` at argv[i], and the next index."""
+    arg = argv[i]
+    if arg == name:
+        if i + 1 >= len(argv):
+            raise UsageError("%s needs a value" % name)
+        return argv[i + 1], i + 2
+    return arg[len(name) + 1:], i + 1
 
 
 def parse_args(argv):
-    as_status, paths, i = None, [], 0
+    opts = {"mode": "check", "as": None, "repo": None, "section": None, "paths": []}
+    i = 0
     while i < len(argv):
         arg = argv[i]
         if arg in ("-h", "--help"):
-            return "help", None
+            opts["mode"] = "help"
+            return opts
         if arg == "--rules":
-            return "rules", None
-        if arg == "--as" or arg.startswith("--as="):
-            if arg == "--as":
-                i += 1
-                if i >= len(argv):
-                    raise UsageError("--as needs a status")
-                value = argv[i]
-            else:
-                value = arg[len("--as="):]
-            if value not in ("idea", "draft", "accepted"):
-                raise UsageError("--as must be idea, draft or accepted, not %r" % value)
-            as_status = value
-        elif arg == "--":
-            paths.extend(argv[i + 1:])
+            opts["mode"] = "rules"
+            return opts
+        name = arg.split("=", 1)[0]
+        if name in ("--as", "--repo", "--section"):
+            value, i = option_value(argv, i, name)
+            opts[name[2:]] = value
+            continue
+        if arg == "--":
+            opts["paths"].extend(argv[i + 1:])
             break
-        elif arg.startswith("-") and arg != "-":
+        if arg.startswith("-") and arg != "-":
             raise UsageError("unknown option %r" % arg)
-        else:
-            paths.append(arg)
+        opts["paths"].append(arg)
         i += 1
-    if not paths:
+    if opts["as"] is not None and opts["as"] not in ("idea", "draft", "accepted"):
+        raise UsageError("--as must be idea, draft or accepted, not %r" % opts["as"])
+    if opts["repo"] is not None and not os.path.isdir(opts["repo"]):
+        raise UsageError("--repo %r is not a directory" % opts["repo"])
+    if not opts["paths"]:
         raise UsageError("no spec files given")
-    return as_status, paths
+    if opts["section"] is not None:
+        if opts["as"] or opts["repo"]:
+            raise UsageError("--section can't be combined with --as or --repo")
+        if len(opts["paths"]) != 1:
+            raise UsageError("--section takes exactly one spec file")
+        opts["mode"] = "section"
+    return opts
+
+
+def load(path):
+    """Return (Spec, None), or (None, the error line to print)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return None, "%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a spec .md file." % (path, e)
+    try:
+        return Spec(path, text), None
+    except ParseError as e:
+        return None, "%s:%d: error [parse] %s: %s. Fix: Correct the file so it parses." % (path, e.line, e.where, e.message)
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
-        as_status, paths = parse_args(argv)
+        opts = parse_args(argv)
     except UsageError as e:
         sys.stderr.write("check: %s\n%s\n" % (e, USAGE))
         return 2
-    if as_status == "help":
+    if opts["mode"] == "help":
         sys.stdout.write(__doc__.lstrip())
         return 0
-    if as_status == "rules":
+    if opts["mode"] == "rules":
         print_rules()
         return 0
+    if opts["mode"] == "section":
+        path = opts["paths"][0]
+        spec, error = load(path)
+        if error:
+            print(error)
+            return 2
+        text = section_text(spec, opts["section"])
+        if text is None:
+            found = ", ".join(s.title for s in spec.sections)
+            sys.stderr.write("check: %s has no '## %s' section; it has: %s\n" % (path, opts["section"], found))
+            return 2
+        sys.stdout.write(text)
+        return 0
     worst = 0
-    for path in paths:
-        try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
-        except (OSError, UnicodeDecodeError) as e:
-            print("%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a spec .md file." % (path, e))
+    as_status = opts["as"]
+    for path in opts["paths"]:
+        spec, error = load(path)
+        if error:
+            print(error)
             worst = 2
             continue
-        try:
-            spec = Spec(path, text)
-        except ParseError as e:
-            print("%s:%d: error [parse] %s: %s. Fix: Correct the file so it parses." % (path, e.line, e.where, e.message))
-            worst = 2
-            continue
-        status, problems = check_spec(spec, as_status)
+        status, problems = check_spec(spec, as_status, opts["repo"])
         for p in problems:
             print(format_problem(path, p))
         errors = sum(1 for p in problems if p.severity == "error")

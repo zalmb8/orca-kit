@@ -10,7 +10,7 @@ The skill **writes and maintains specs**. It has three modes:
 |---|---|---|---|---|
 | **capture** | "spec this idea", "capture this", "jot down a spec for…" | nothing | `idea` | Writes `specs/<slug>.md` from what's already in the conversation: a goal, a little context and open questions. No interview and no repo scan. |
 | **refine** | "refine the X spec", "flesh out X", "make X ready to build" | `idea` or `draft` | `draft`, or `accepted` once the user approves | Scans the repo for commands, critical files and types, asks the user about whatever the repo can't answer, and fills in all six sections. Sets `accepted` only on the user's explicit yes. |
-| **update** | "update the spec with what we learned", "sync the spec" | `accepted` | `accepted` | Writes discoveries made during implementation back into the spec and trims prose that types and tests now cover. If the acceptance criteria change, it asks the user to accept again. |
+| **update** | "update the spec with what we learned", "sync the spec", or before the final commit of a build | `accepted` | `accepted` | Writes discoveries made during implementation back into the spec and trims prose that types and tests now cover. If the acceptance criteria change, it asks the user to accept again. |
 
 ### Non-goals
 
@@ -44,8 +44,8 @@ Fields for `done` and `superseded` (for example the verification fields and `sup
 | Status | Set by | Required content |
 |---|---|---|
 | `idea` | capture | Goal (1–3 sentences), Context, Open Questions. Other sections may be missing. |
-| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Goal & Non-Goals has a `Non-goals:` list; Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists and a `Decision Log:`. Other TBDs and open questions are allowed. |
-| `accepted` | refine, with the user's approval | All six sections are filled in. Every AC has a `verify:` line. The Non-goals and the Always, Ask First and Never lists each have at least one item, and the Decision Log has at least one entry with `why:`, `rejected:` and `source:` lines; none of them has a `TBD:` line. No TBDs and no open questions anywhere. `accepted_by` and `accepted_on` are set. |
+| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Goal & Non-Goals has a `Non-goals:` list; Interfaces & Data Contracts has `Existing:` and `New:` lists; Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists and a `Decision Log:`. The Verification Gate has one entry per AC copying its `verify:` or `TBD:` line, and its whole-suite commands come from Environment & Commands. Other TBDs and open questions are allowed. |
+| `accepted` | refine, with the user's approval | All six sections are filled in. Every AC has a `verify:` line. The edge-case table covers invalid input, failure and state conflict, or says why one can't happen. `Existing:` and `New:` have at least one item between them. The Non-goals and the Always, Ask First and Never lists each have at least one item, and the Decision Log has at least one entry with `why:`, `rejected:` and `source:` lines; none of them has a `TBD:` line. No TBDs and no open questions anywhere. `accepted_by` and `accepted_on` are set. |
 | `done` | a future verification skill | Out of scope here. |
 | `superseded` | another skill, or set by hand | Out of scope here. |
 
@@ -114,6 +114,17 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Asks the user to accept again if the acceptance criteria change.
 - [x] **Done when:** a discovery made during implementation can be synced into the spec, and the spec still passes the checker.
 
+### v0.7: Closing the gaps with the spec concepts ✅
+A review against the foundational concepts for agentic specs found the shape right but several properties described in prose instead of checked.
+- [x] The checker enforces what was mechanical but left to refine's checklists: the Verification Gate matching the ACs (`gate.matches-acs`), whole-suite commands coming from Environment & Commands (`gate.suite`), edge-case category coverage (`edge.categories`), and a warning when no non-goal names a path (`nongoal.path`).
+- [x] Concrete examples: an optional `example:` line under an AC (`` `<input>` → <expected output> ``), required by refine whenever the output is exact and known, and asserted literally by the AC's test.
+- [x] Typed contracts: Interfaces & Data Contracts splits into `Existing:` (`` `path` (`Symbol`) ``) and `New:` (contracts in code) lists; update moves `New:` items to `Existing:` once their files land.
+- [x] `check --repo <root>`: `Existing:` paths and symbols exist (`repo.paths`), named scripts, make targets and just recipes exist (`repo.commands`), and an accepted spec isn't older than the code it links to (`repo.stale`). Warnings only. A `verify:` runner missing from Environment & Commands warns without `--repo` (`verify.runner`).
+- [x] Two-way sync: update runs before the final commit of a build, the spec is committed with the code, and every spec's `Always:` list carries that rule. Update handles acceptance and code in one commit.
+- [x] Repo-wide boundaries live once: refine reads the repo's `CLAUDE.md` / `AGENTS.md`, drops `repo` defaults already stated there, and can offer to move them there.
+- [x] `check --section "<heading>"` prints one section, so agents load only what they need.
+- [x] **Done when:** the examples pass with no warnings, including `--repo` against a matching repo, and a failing fixture exists for each new rule.
+
 ### Alongside each release
 - Sample specs in `skills/spec/examples/<status>/<slug>.md` (an `idea`, the `draft` refined from it, and later an `accepted`) to use as test fixtures.
 
@@ -163,7 +174,7 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | `done` and `superseded` are checked only against this skill's `accepted` rules, including `accepted_by` and `accepted_on` | Both statuses come after `accepted`, and their own rules belong to the skills that set them. |
 | `idea` and `draft` fail if `accepted_by` or `accepted_on` is set | Only the user's yes fills them in, so a value at a lower status is a mistake. |
 | `accepted` is checked against every `draft` rule as well as its own, including the edge-case table and the AC format (ID and Given/When/Then) from v0.3 | An accepted spec is a finished draft; the AC format is what makes "every behavior is an AC" checkable. |
-| The checker enforces only the status rules table and the v0.3 and v0.4 rules it names; the checklist items that aren't status rules (edge-case category coverage, the Verification Gate matching the ACs, at least one non-goal naming a path) stay with refine's checklists | Keeps the checker to the rules the table makes required, so it never fails a spec on a judgement call. |
+| The checker enforces the status rules table, the v0.3 and v0.4 rules it names, and, from v0.7, every checklist rule that is mechanical: the gate matching the ACs, edge-case category coverage, a non-goal naming a path. Rules that stay judgement calls (whether an AC needs an `example:`) remain in refine's checklists. Earlier, all three were left to the checklists | Those three were never judgement calls: a string comparison, a prefix lookup and a path pattern. The checker still never fails a spec on a real judgement call; heuristics are warnings. |
 | A TBD is the word `TBD` and an open question is a `?` ending a word, or an `Open Questions` heading or label, anywhere outside code spans and fences | Simple to find and explain; code may legitimately contain both. |
 | Word budgets per section live in one table at the top of `check`, set at about twice the accepted example's size | One place to tune them, with room for larger features. |
 | Word budgets warn at `idea`, `draft`, `done` and `superseded`, and fail at `accepted` | An accepted spec is what an agent loads, so it must stay short; earlier statuses are still being written, and this skill doesn't edit later ones. |
@@ -186,3 +197,18 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | Update's rules live in `skills/spec/update.md` | Same pattern as the other guidance files; update loads it when it runs. |
 | The updated example lives at `examples/updated/export-todos-as-json.md`, an exception to `examples/<status>/` | Its status is `accepted`, and `accepted/` already holds the spec it was updated from; the file keeps its real name. |
 | The updated example's test compares it with the accepted example: same frontmatter except `updated`, same ACs and guardrail lists, one new edge-case row under an existing AC, one new decision with the next ID, one trimmed passage | This proves the v0.6 done criterion and the re-acceptance split, not just that the file passes the checker. The checker itself is unchanged. |
+| Rules that aren't always errors get a per-status severity in one `RULE_SEVERITY` table in `check`; `edge.categories` follows the word budgets (warn before `accepted`, fail at it) and heuristics are warnings everywhere | One place to see and tune how strict each rule is, generalising the v0.5 budget table. |
+| `gate.matches-acs` compares each gate entry with its AC's `verify:` line character for character, and skips when the ACs themselves don't parse | The gate is a copy, so any difference is drift; skipping avoids reporting one broken AC twice. |
+| An AC's `example:` line is `` `<input>` → <expected> `` with a code span before the arrow; the checker checks the format, refine decides when one is required | Format is mechanical; whether output is "exact and known" is a judgement. |
+| Adding, changing or removing an `example:` line needs re-acceptance | An example pins accepted behavior as much as the *then* does. |
+| Interfaces & Data Contracts has `Existing:` and `New:` labelled lists, like the guardrails; a section that is only `TBD.` skips the label rules | Gives the checker and `--repo` fixed places to look, while a draft can still leave the section open. |
+| `New:` items must contain code (a span or fenced block) | The checker can't judge whether a contract is typed, but it can refuse one stated only in prose. |
+| `--repo` rules are warnings, and run only when the flag is given | The checker stays runnable on a spec alone (in CI for this plugin, or before the code exists), and a repo-specific quirk never blocks acceptance. |
+| `repo.stale` compares commits, not dates: any commit after the spec's last commit that touches its linked files; it skips when the spec has uncommitted changes or git isn't there | Dates are only day-precise; an uncommitted spec means a sync is in progress. |
+| `repo.stale` runs only at `accepted` | A draft isn't built against yet, and `done`/`superseded` belong to other skills. |
+| Update runs before the final commit of a build, and the spec is committed with the code; the rule sits in every spec's `Always:` list | The building agent reads the spec, not necessarily this skill, so the rule has to travel with the spec. |
+| When the accepting commit also changes code, update diffs from its parent | Acceptance and the first build commit can be one commit once specs are committed with code. |
+| Defaults are marked `repo` or `spec` scope; `repo` ones already stated in `CLAUDE.md`/`AGENTS.md` are dropped from the spec, with one `Follow the repo rules` item instead; `spec` ones always stay | Repo-wide rules stop being copied into every spec, and every list keeps at least one item. |
+| Refine edits the repo's `CLAUDE.md` only to append an `## Agent boundaries` section, and only on the user's yes | A boundary file Claude Code already loads beats a new file type in `specs/`, which `check specs/*.md` would also trip over. |
+| `check --section` lives in the checker, not a separate script | It reuses the same parser, so a section is found exactly as the checker finds it. |
+| Specs written before v0.7 are brought into the format by update as an information-only change, except the new sync rule, which is shown to the user | The content stays the same; only the new boundary is something the user didn't accept. |

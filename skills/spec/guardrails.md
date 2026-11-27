@@ -38,23 +38,26 @@ Never:
 
 Start from these defaults and adapt each one to the repo. The user only confirms or changes them; never ask the user to write the lists.
 
-| List | Default | Adapted with, from the scan |
-|---|---|---|
-| Always | Run the whole-suite commands before calling the work done, and fix what fails. | The exact lint, typecheck and test commands from Environment & Commands. |
-| Always | Follow the existing structure and style. | The closest sibling file and its test, from the critical files. |
-| Always | Write one test per AC, named starting with its ID and a colon (`AC-n: …`). | The test file the `verify:` lines name. |
-| Ask First | Adding, removing or upgrading a dependency. | The package manifest (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, …). |
-| Ask First | A schema, storage-format or data migration. | The migrations directory, ORM models or store module. |
-| Ask First | Changing a public interface that Interfaces & Data Contracts doesn't list. | The shared modules and entry points the goal touches. |
-| Ask First | Changing CI, build or lint config. | The CI files and config files the scan read. |
-| Never | Reading, printing, modifying or committing secrets. | Secret and env files found (`.env*`, credentials, key files). |
-| Never | Editing generated files by hand. | Build output, generated code and lockfiles found. |
-| Never | Refactoring, renaming or reformatting code the goal doesn't need. | The adjacent code the non-goals name. |
-| Never | Skipping, weakening or deleting a test, or editing an AC, to make the Verification Gate pass. | The test command. |
+| List | Default | Scope | Adapted with, from the scan |
+|---|---|---|---|
+| Always | Run the whole-suite commands before calling the work done, and fix what fails. | spec | The exact lint, typecheck and test commands from Environment & Commands. |
+| Always | Follow the existing structure and style. | spec | The closest sibling file and its test, from the critical files. |
+| Always | Write one test per AC, named starting with its ID and a colon (`AC-n: …`). | spec | The test file the `verify:` lines name. |
+| Always | Before the final commit, sync this spec with what the build found (`orca-kit:spec` update) and commit it with the code. | spec | Nothing to adapt; always kept. |
+| Ask First | Adding, removing or upgrading a dependency. | repo | The package manifest (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, …). |
+| Ask First | A schema, storage-format or data migration. | repo | The migrations directory, ORM models or store module. |
+| Ask First | Changing a public interface that Interfaces & Data Contracts doesn't list. | spec | The shared modules and entry points the goal touches. |
+| Ask First | Changing CI, build or lint config. | repo | The CI files and config files the scan read. |
+| Never | Reading, printing, modifying or committing secrets. | repo | Secret and env files found (`.env*`, credentials, key files). |
+| Never | Editing generated files by hand. | repo | Build output, generated code and lockfiles found. |
+| Never | Refactoring, renaming or reformatting code the goal doesn't need. | spec | The adjacent code the non-goals name. |
+| Never | Skipping, weakening or deleting a test, or editing an AC, to make the Verification Gate pass. | spec | The test command. |
 
 - **Adapt, don't paraphrase.** Every rule names the real command, file or directory it is about. A default with nothing to adapt in this repo (no migrations, no secrets found) is dropped; say which in the report.
 - **Add from the repo.** Add a rule only when the scan shows one: a file `CODEOWNERS` assigns to someone else, a directory a README or header comment marks as generated or vendored, a CI step that needs a secret. Never add a rule the repo and the user don't support.
 - **Confirm in the interview.** Show the adapted lists in the single refine interview and ask the user to confirm or change them. Apply every change the user makes. If the user skips the question, keep the adapted lists; accepting the spec later confirms them.
+- **Repo-wide rules live once.** A `repo` default is the same for every spec in the repo. If the target repo's `CLAUDE.md` or `AGENTS.md` already states a rule on the same subject, the same or stricter, drop that default from the spec and add one `Always:` item instead: `` Follow the repo rules in `CLAUDE.md`. `` Report each default dropped this way. The `spec` defaults always stay, so every list keeps at least one item.
+- **Offer to move them.** If the repo instructions don't state the `repo` defaults yet and `specs/` already holds another `draft` or `accepted` spec, offer in the boundaries question to add them to the repo's `CLAUDE.md` (or `AGENTS.md`, if that is the one the repo has) as an `## Agent boundaries` section with `Always:`, `Ask First:` and `Never:` lists. Only on the user's yes, append that section, changing nothing else in the file, and drop those rules from the spec as above. Never edit the repo instructions otherwise.
 - **Keep what's there.** When refining a `draft` that already has the lists, keep them as written, including the user's earlier changes; only adapt what the repo has since changed.
 
 ## Decision Log
@@ -80,6 +83,8 @@ Decision Log:
 
 ## Check before saving
 
+- No `repo` rule is repeated in the spec when the repo's `CLAUDE.md` or `AGENTS.md` states it; the spec has the `Follow the repo rules` item instead.
+- The `Always:` list has the sync-before-commit rule.
 - Goal & Non-Goals has a `Non-goals:` list with at least one item, and at least one item names adjacent code by path.
 - Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists, each with at least one rule, and every rule names a real command, file or directory.
 - The Decision Log has at least one entry, and every entry has an ID, a decision, and `why:`, `rejected:` and `source:` lines, or a `TBD:` line in a `draft`.

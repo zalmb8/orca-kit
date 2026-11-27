@@ -8,6 +8,7 @@ Every behavior in Behavior & Edge Cases is an AC. Do not add free prose about be
 
 ```markdown
 - **AC-1:** Given <starting state>, when <action>, then <observable result>.
+  example: `<exact input or command>` → <expected result, with literal output in backticks>
   verify: `<exact command or test that checks it>`
 ```
 
@@ -18,6 +19,11 @@ Every behavior in Behavior & Edge Cases is an AC. Do not add free prose about be
   - If the test doesn't exist yet, name the test file it will go in and a test name that starts with the AC ID and a colon, and filter on that: `` verify: `npm test -- test/commands/export.test.ts -t "AC-1:"` ``. The colon keeps `AC-1` from also matching `AC-10`.
   - Prefer a command that runs only this AC's check. Use a whole-suite command only when the AC is about the suite itself (for example "the build passes").
   - Never invent a runner or a command the repo doesn't have.
+- **`example:`** an indented line, before `verify:`, pinning the AC to one concrete case: `` example: `todo export` with an empty store → stdout `[]` and a newline, exit 0 ``. The input or command goes in backticks before the arrow (`→` or `->`); after it comes the expected result, with any literal output in backticks.
+  - **Required** whenever the *then* names exact output (stdout, a response body, a file's contents, an error message) and that output is known. Optional otherwise; an AC may have several.
+  - **Literal, not illustrative.** Write only values the AC actually guarantees; never `...` or "something like". If the exact output isn't settled yet, leave the example out (or, in a draft, put `TBD:` in the *then*).
+  - **The test asserts it.** The test named in `verify:` checks the example's input and output literally, so an agent can't pass the AC with a test that only matches its own reading of the *then*.
+  - Adding, changing or removing an `example:` line changes the AC, so in an `accepted` spec it needs re-acceptance (`update.md`).
 - **`TBD:`** In a `draft`, an AC whose check isn't known yet has a `TBD:` line in place of `verify:`, saying what is unknown: `TBD: no test harness for concurrent processes; how should this be checked?`. If the expected result itself is unknown, put `TBD:` in the *then* (`then TBD: it prints \`[]\`, or nothing?`) and keep the `verify:` line if the test is already known. An `accepted` spec has no `TBD:` lines.
 
 ## Edge cases
@@ -83,3 +89,6 @@ Whole suite, from Environment & Commands:
 - Every edge-case row names an AC that exists.
 - Invalid input, failure and state conflict each appear as a row or in the `Not applicable:` line.
 - The Verification Gate has exactly one entry per AC, with the same command, plus the whole-suite commands.
+- Every AC whose *then* names exact, known output has an `example:` line.
+
+The checker enforces the gate matching the ACs (`gate.matches-acs`), the whole-suite commands coming from Environment & Commands (`gate.suite`), the categories (`edge.categories`: a warning at `draft`, an error at `accepted`), the `example:` format (`ac.example`), and warns when a `verify:` command's runner isn't in Environment & Commands (`verify.runner`). Whether an example is *required* stays with this checklist.

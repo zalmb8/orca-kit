@@ -30,7 +30,11 @@ Find the files an agent will read or change to meet the goal.
 
 Find the contracts the feature has to respect or extend: TypeScript types and interfaces, zod or other validators, pydantic or dataclass models, JSON Schema, OpenAPI, GraphQL, protobuf, database migrations and ORM models.
 
-## 4. Protected and generated files
+## 4. Repo instructions
+
+Read the target repo's `CLAUDE.md` and `AGENTS.md` (at the root, and in the directories the goal touches) for rules agents already follow there: boundaries, commands, style. `guardrails.md` says how they shorten the spec's Always / Ask First / Never lists. Don't copy them into the spec.
+
+## 5. Protected and generated files
 
 Find the paths the Always / Ask First / Never lists adapt to (see `guardrails.md`). Note each path; never open or copy a secret.
 
@@ -44,6 +48,20 @@ Find the paths the Always / Ask First / Never lists adapt to (see `guardrails.md
 
 ## Linking, not copying
 
-- Link each file by repo-relative path, adding a symbol or line where it helps: `` `src/types.ts` (`Todo`) `` or `` `src/store.ts:12` ``.
-- Add a few words on why it matters ("the shape every todo has", "where `list` reads todos").
+Interfaces & Data Contracts has two labelled lists, so the checker can verify them:
+
+```markdown
+Existing:
+
+- `src/types.ts` (`Todo`): the shape of every todo; the export's fields come from here.
+
+New:
+
+- CLI: `todo export`, no arguments or flags.
+- stdout: `Todo[]` as JSON, then a newline; nothing else.
+```
+
+- **Existing:** each item starts with the repo-relative path in backticks, then, where it helps, the symbols it defines in backticks inside parentheses: `` `src/types.ts` (`Todo`) `` or `` `src/store.ts:12` ``. Then a few words on why it matters ("the shape every todo has", "where `list` reads todos"). `check --repo` confirms each path exists and contains each symbol.
+- **New:** each item states the contract the goal adds *in code*, in terms of the existing types: a signature, a type, a schema, or the CLI usage, in backticks or an indented fenced block in the repo's language. "A JSON array of todos" is prose; `` `Todo[]` as JSON `` is a contract a test and the type checker can hold the build to. A file the build will create goes here, by its future path.
 - Never paste a file's contents, a type's fields or a schema into the spec. The file is the source of truth and will change; the link stays right.
+- Update mode moves a `New:` item to `Existing:` once its file exists and states it (`update.md`).

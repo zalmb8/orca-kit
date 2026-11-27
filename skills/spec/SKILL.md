@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Writes and maintains specifications kept in the repo at specs/<slug>.md, with a status that moves from idea to draft to accepted. Use to capture an idea ("spec this idea", "capture this", "jot down a spec for…"), to refine one into a buildable spec ("refine the X spec", "flesh out X", "make X ready to build"), or to sync discoveries back into an accepted spec ("update the spec with what we learned", "sync the spec").
+description: Writes and maintains specifications kept in the repo at specs/<slug>.md, with a status that moves from idea to draft to accepted. Use to capture an idea ("spec this idea", "capture this", "jot down a spec for…"), to refine one into a buildable spec ("refine the X spec", "flesh out X", "make X ready to build"), or to sync discoveries back into an accepted spec ("update the spec with what we learned", "sync the spec"), including before the final commit of work that builds an accepted spec.
 ---
 
 # spec
@@ -15,7 +15,7 @@ Pick the mode from what the user asked for.
 |---|---|---|---|
 | **capture** | "spec this idea", "capture this", "jot down a spec for…" | nothing | `idea` |
 | **refine** | "refine the X spec", "flesh out X", "make X ready to build" | `idea` or `draft` | `draft`, or `accepted` on the user's explicit yes |
-| **update** | "update the spec with what we learned", "sync the spec" | `accepted` | `accepted` |
+| **update** | "update the spec with what we learned", "sync the spec", or before the final commit of a build | `accepted` | `accepted` |
 
 The target repo is the repo being worked on (its git root), not this plugin.
 
@@ -40,22 +40,23 @@ Turn an `idea` or `draft` into a `draft` with all six sections. Scan the repo fi
 2. **Scan the repo** as described in `${CLAUDE_PLUGIN_ROOT}/skills/spec/repo-scan.md`:
    - the exact build, lint and test commands, from package.json scripts, Makefile, pyproject.toml and CI config such as `.github/workflows/`;
    - the critical files and the existing types or schemas relevant to the goal;
-   - the protected and generated files: secrets, build output, lockfiles, config, migrations.
+   - the protected and generated files: secrets, build output, lockfiles, config, migrations;
+   - the repo's `CLAUDE.md` and `AGENTS.md`, for rules agents already follow there.
    Link to files by path. Never copy their contents into the spec.
-3. **List the behaviors and edge cases** as described in `${CLAUDE_PLUGIN_ROOT}/skills/spec/acceptance-criteria.md`: the happy path, then invalid input, failure states (network, IO, corrupt data) and state conflicts, wherever they apply. Take each expected behavior from the conversation, the idea, and how the closest existing code and tests already handle the same case.
-4. **Draft the guardrails** as described in `${CLAUDE_PLUGIN_ROOT}/skills/spec/guardrails.md`: propose the non-goals, adapt the default Always / Ask First / Never lists to the commands and paths the scan found, and collect the decisions the conversation made and the choices the repo already settled.
+3. **List the behaviors and edge cases** as described in `${CLAUDE_PLUGIN_ROOT}/skills/spec/acceptance-criteria.md`: the happy path, then invalid input, failure states (network, IO, corrupt data) and state conflicts, wherever they apply. Take each expected behavior from the conversation, the idea, and how the closest existing code and tests already handle the same case. Where a behavior has exact, known output, write a concrete `example:` for it.
+4. **Draft the guardrails** as described in `${CLAUDE_PLUGIN_ROOT}/skills/spec/guardrails.md`: propose the non-goals, adapt the default Always / Ask First / Never lists to the commands and paths the scan found, leaving out the repo-wide rules that the repo's `CLAUDE.md` or `AGENTS.md` already states, and collect the decisions the conversation made and the choices the repo already settled.
 5. **Interview the user about intent only.** In one message, ask only what the spec, the conversation and the scan leave unanswered, and only about:
    - the **goal**: the exact outcome, if the idea is vague or ambiguous;
    - the **non-goals**: show the proposed list and ask the user to confirm or change it;
    - **decisions**: choices that are still open, as concrete options, and why a settled choice was made if no one said;
-   - the **boundaries**: show the adapted Always / Ask First / Never lists and ask the user to confirm or change them, never to write them;
+   - the **boundaries**: show the adapted Always / Ask First / Never lists and ask the user to confirm or change them, never to write them; where `guardrails.md` says to, offer to move the repo-wide ones into the repo's `CLAUDE.md`;
    - **expected behavior for edge cases** that the repo and the conversation can't answer, as concrete choices.
    Never ask about commands, files, types or anything else the scan found. Resolve the idea's open questions from the scan where it answers them, and ask about the rest only if they are about intent. If the user doesn't know or skips a question, record it as `TBD` (see below) rather than guessing.
 6. **Write the draft.** Rewrite the file in the shape of `${CLAUDE_PLUGIN_ROOT}/skills/spec/template-spec.md`, with all six headings exactly as in the template, in order, and no other `##` headings. Keep everything the idea said: move each piece into the section it informs, and drop nothing.
    - **Goal & Non-Goals:** the idea's Goal, sharpened by the user's answers, then its Context as a short paragraph on why, then the `Non-goals:` list the user confirmed, in the format of `guardrails.md`.
    - **Environment & Commands:** the exact commands the scan found, each with the file it came from.
-   - **Interfaces & Data Contracts:** links to the existing types, schemas and critical files, plus the new contracts the goal implies, described in terms of those types.
-   - **Behavior & Edge Cases:** every behavior as an acceptance criterion, then the edge-case table, in the format of `acceptance-criteria.md`. Every AC has an ID (`AC-1`, `AC-2`, …), a Given/When/Then description and a `verify:` line naming the exact command or test that checks it. Every edge-case row points to an AC. No behavior is written without an AC.
+   - **Interfaces & Data Contracts:** an `Existing:` list linking the existing types, schemas and critical files by `` `path` (`Symbol`) ``, and a `New:` list stating the new contracts the goal implies in code (signatures, types, schemas, CLI usage) in terms of those types, as `repo-scan.md` says.
+   - **Behavior & Edge Cases:** every behavior as an acceptance criterion, then the edge-case table, in the format of `acceptance-criteria.md`. Every AC has an ID (`AC-1`, `AC-2`, …), a Given/When/Then description, an `example:` line wherever its output is exact and known, and a `verify:` line naming the exact command or test that checks it. Every edge-case row points to an AC. No behavior is written without an AC.
    - **Boundaries & Decision Log:** the `Always:`, `Ask First:` and `Never:` lists with the user's changes, then the `Decision Log:`, in the format of `guardrails.md`. Each entry has an ID (`D-1`, `D-2`, …), the decision, and `why:`, `rejected:` and `source:` lines. Record only what the user decided and what the repo already settled; never invent a decision.
    - **Verification Gate:** built from the AC list: one entry per AC with its `verify:` command, then the whole-suite commands from Environment & Commands. It lists the checks; it never runs them.
 
@@ -63,14 +64,14 @@ Turn an `idea` or `draft` into a `draft` with all six sections. Scan the repo fi
 
    Before saving, run the checklists at the end of `acceptance-criteria.md` and `guardrails.md`.
 7. **Set the frontmatter.** `status: draft`. Keep `id` and `created`; set `updated` to today. Leave `accepted_by` and `accepted_on` empty.
-8. **Check the draft.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check specs/<slug>.md`, fix every error it reports, and run it again until it exits 0. Shorten any section it warns is over its word budget.
+8. **Check the draft.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --repo . specs/<slug>.md` from the repo root, fix every error it reports, and run it again until it exits 0. Fix each warning the spec or the repo can answer: shorten a section over its word budget, correct a path, symbol or command the repo doesn't have, add a missing edge-case category.
 9. **Report** the path, the commands and files found, the number of ACs and decisions, any default boundary dropped because it doesn't apply, and every remaining `TBD` (including each AC still without a `verify:` line).
 
 ### Accepting
 
 Refine leaves the spec at `draft` until the user accepts it. Never ask the user to accept a spec that fails the check.
 
-1. **Check it as accepted.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --as accepted specs/<slug>.md`. It applies every `accepted` rule except `accepted_by` and `accepted_on`, which only the user's yes can fill in.
+1. **Check it as accepted.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --as accepted --repo . specs/<slug>.md`. It applies every `accepted` rule except `accepted_by` and `accepted_on`, which only the user's yes can fill in.
 2. **Fix what you can.** Fix every error the spec and the repo already answer, without asking: the AC, edge-case table, Decision Log and list formats, a section over its word budget, a `verify:` line the scan can name. Never fix an error by deleting an AC, a non-goal, a boundary or a decision, or by guessing an answer.
 3. **Ask about the rest.** When refining a `draft`, run steps 1 and 2 before the interview (step 5 above), and add each remaining error to it as a question: each `TBD:` and open question, each AC with no known check, each empty list or missing `why:`, `rejected:` or `source:` line. Write the answers into the spec and check it again. While it still fails, keep it at `draft` and report what is missing.
 4. **Ask for acceptance** only once the check exits 0. Move the spec to `accepted` only on the user's explicit yes: set `status: accepted`, `accepted_by` to the user's name or handle, and `accepted_on` and `updated` to today.
@@ -81,16 +82,17 @@ Refine leaves the spec at `draft` until the user accepts it. Never ask the user 
 Write discoveries made during implementation back into an `accepted` spec, trim prose that types and tests now state, and keep it `accepted` and passing the check. Follow `${CLAUDE_PLUGIN_ROOT}/skills/spec/update.md`.
 
 1. **Find the spec** as refine does. Update runs only on an `accepted` spec. If it is `idea` or `draft`, say so and suggest refine instead; if it is `done` or `superseded`, leave it alone and say so. Run the checker on it first; if it already fails, fix it as step 6 says before adding anything.
+   Run update when the user asks, and also, without being asked, before the final commit of a task that builds an accepted spec; then commit the spec with the code (see "When to run it" in `update.md`).
 2. **Gather discoveries** from the conversation and from the implementation: `git log` and `git diff` since the commit that accepted the spec, on the files it links to and the tests its `verify:` lines name; new or changed tests and types; edge cases and failures found while building. Never invent a discovery. If something is unclear, ask; if it stays unclear, leave it out and report it.
 3. **Sort each change.** Adding a new decision, an edge-case row under an existing AC that already covers it, contract details that match the code, and trims only add information. Adding, removing or changing an AC, a Non-goal, or an Always, Ask First or Never rule, and changing or removing an existing edge-case row, needs re-acceptance. The full table is in `update.md`.
 4. **Write the information-only changes** into the section each belongs to:
    - a new edge case becomes a row in the edge-case table, pointing to the AC that covers it, or to a new AC (step 5) when the behavior is new;
    - a new settled decision becomes a Decision Log entry with the next unused `D-n` and `why:`, `rejected:` and `source:` lines, in the format of `guardrails.md`;
-   - a changed contract updates Interfaces & Data Contracts, linking to the real files as `repo-scan.md` says;
+   - a changed contract updates Interfaces & Data Contracts, linking to the real files as `repo-scan.md` says, and a `New:` item whose file now exists moves to `Existing:`;
    - prose that a real type, schema or test now states is replaced by a link to it. Never trim the ACs, the edge-case table, the Non-goals or the guardrails.
    Keep exactly the six headings and add no changelog: git history records the changes. Bump `updated` to today.
 5. **Ask before a gated change.** Show the user each change that needs re-acceptance, before and after, and get an explicit yes for it. On a yes, write it, rebuild the Verification Gate if an AC changed, and set `accepted_by`, `accepted_on` and `updated` again. On a no, leave that change out and keep the other updates. AC and decision IDs stay stable; a removed ID is never reused.
-6. **Check it.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check specs/<slug>.md` after every update; it must exit 0 with `ok (accepted)`. Fix what fails without deleting an AC, row, non-goal, boundary or decision, or ask the user. If it still fails, restore the spec as it was before the update. Never leave an accepted spec failing the check.
+6. **Check it.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --repo . specs/<slug>.md` after every update; it must exit 0 with `ok (accepted)`. Fix what fails without deleting an AC, row, non-goal, boundary or decision, or ask the user. If it still fails, restore the spec as it was before the update. Never leave an accepted spec failing the check.
 7. **Report** each discovery and where it went (AC or D ID), what was trimmed, each gated change and the user's answer, anything left out, and the checker's result.
 
 ## Spec files
@@ -98,7 +100,8 @@ Write discoveries made during implementation back into an `accepted` spec, trim 
 - One file per spec: `specs/<slug>.md` in the target repo (the repo being worked on, not this plugin). Create `specs/` if it is missing.
 - The slug is short, lowercase and hyphenated, and `id` equals it.
 - Never write more than one spec per file, and never split one spec across files.
-- Keep section headings exactly as in the templates, so agents can load one section instead of the whole file.
+- Keep section headings exactly as in the templates, so agents can load one section instead of the whole file with `check --section "<heading>" specs/<slug>.md`.
+- Commit a spec's changes in the same commit as the code they describe.
 
 ## Frontmatter
 
@@ -122,8 +125,8 @@ accepted_on:
 | Status | Set by | Required content |
 |---|---|---|
 | `idea` | capture | Goal (1–3 sentences), Context, Open Questions. Other sections may be missing. |
-| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Goal & Non-Goals has a `Non-goals:` list; Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists and a `Decision Log:`. Other TBDs and open questions are allowed. |
-| `accepted` | refine, with the user's approval | All six sections are filled in. Every behavior is an AC and every AC has a `verify:` line. The Non-goals and the Always, Ask First and Never lists each have at least one item, and the Decision Log has at least one entry with `why:`, `rejected:` and `source:` lines; none of them has a `TBD:` line. No TBDs and no open questions anywhere. `accepted_by` and `accepted_on` are set. |
+| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Goal & Non-Goals has a `Non-goals:` list; Interfaces & Data Contracts has `Existing:` and `New:` lists; Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists and a `Decision Log:`. The Verification Gate has one entry per AC copying its `verify:` or `TBD:` line, and its whole-suite commands come from Environment & Commands. Other TBDs and open questions are allowed. |
+| `accepted` | refine, with the user's approval | All six sections are filled in. Every behavior is an AC and every AC has a `verify:` line. The edge-case table covers invalid input, failure and state conflict, or says why one can't happen. `Existing:` and `New:` have at least one item between them. The Non-goals and the Always, Ask First and Never lists each have at least one item, and the Decision Log has at least one entry with `why:`, `rejected:` and `source:` lines; none of them has a `TBD:` line. No TBDs and no open questions anywhere. `accepted_by` and `accepted_on` are set. |
 
 - **Only the user can accept a spec.** Set `accepted` only after the user's explicit yes, and record who accepted it (`accepted_by`) and when (`accepted_on`). Never infer approval. The same holds when update re-accepts a spec.
 - **This skill never sets `done` or `superseded`.** Other skills, or the user by hand, set those statuses. Leave such specs alone.
@@ -131,9 +134,12 @@ accepted_on:
 
 ## Checker
 
-`${CLAUDE_PLUGIN_ROOT}/skills/spec/check <spec.md> [...]` checks a spec's frontmatter and the rules above for the status it claims, plus a word budget per section. It needs only `python3`.
+`${CLAUDE_PLUGIN_ROOT}/skills/spec/check <spec.md> [...]` checks a spec's frontmatter and the rules above for the status it claims, the formats in the guidance files (ACs and their `example:` lines, `Existing:` and `New:` items, the Verification Gate), plus a word budget per section. It needs only `python3`.
 
-- `--as idea|draft|accepted` checks the content as if the spec claimed that status. `--rules` lists the rules checked at each status.
+- `--as idea|draft|accepted` checks the content as if the spec claimed that status. `--rules` lists the rules checked at each status, with their severity.
+- `--repo <root>` also checks the spec against the target repo: every `Existing:` path exists and contains its symbols; every npm, yarn, pnpm or bun script, make target and just recipe the spec names exists; and, for an `accepted` spec, no commit since the spec last changed touches the files it links to (`repo.stale`, which uses git). These are warnings only.
+- `--section "<heading>" <spec.md>` prints that one section and exits, so an agent or another skill can load only what it needs, such as the Verification Gate.
+- Heuristic rules (a non-goal naming a path, a `verify:` runner from Environment & Commands) are always warnings. Edge-case category coverage warns at `draft` and fails at `accepted`.
 - It prints one line per problem, `<file>:<line>: <error|warning> [<rule>] <section>: <problem>. Fix: <what to do>.`, and `<file>: ok (<status>)` for a file that passes.
 - It exits 0 when every file passes, 1 when a rule fails, and 2 for a usage or parse error. Warnings never change the exit code.
 - Word budgets warn at `idea` and `draft` and fail at `accepted`, so refine trims a spec before it is accepted.
