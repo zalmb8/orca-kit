@@ -9,6 +9,7 @@ A Claude Code plugin of personal skills and agents for driving AI software devel
 - `skills/<name>/SKILL.md` — one directory per skill; invoked as `orca-kit:<name>`.
 - `agents/<name>.md` — subagent definitions.
 - `templates/skill/` — copy this to start a new skill.
+- `docs/<skill>/` — design and implementation plan for each skill (e.g. `docs/spec/ROADMAP.md`).
 
 ## Conventions
 
