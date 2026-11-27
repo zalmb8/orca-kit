@@ -1,0 +1,14 @@
+{
+  "name": "orca-kit",
+  "owner": {
+    "name": "zalmb8"
+  },
+  "description": "Personal Claude Code skills for AI software development workflows in Orca",
+  "plugins": [
+    {
+      "name": "orca-kit",
+      "source": "./",
+      "description": "AI software development workflows driven from Orca"
+    }
+  ]
+}
