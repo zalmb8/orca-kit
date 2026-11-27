@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Validate orca-kit:spec-review review records (specs/reviews/<slug>.json).
+
+Usage:
+  record <specs/reviews/<slug>.json> [...]
+  record --rules
+
+  --rules       List the rules each record is checked against, and exit.
+
+A review record is a JSON object, committed next to the spec it reviews
+(docs/spec-review/ROADMAP.md, "Findings format"; the format is in
+review-record.md next to this script):
+
+  {
+    "spec": "<slug>",
+    "risk": {"tier": "low" | "high", "risks": [<risk>, ...], "reasons": [<text>, ...]},
+    "sign_off": null | {"signed_off_by": <name>, "signed_off_on": "YYYY-MM-DD", "risks": [<risk>, ...]}
+  }
+
+Every field is required; only `sign_off` may be null; unknown fields are
+rejected. Later releases add their own fields (gate results, passes,
+questions) to this list.
+
+Prints one line per problem:
+  <file>:<line>: error [<rule>] <field>: <problem>. Fix: <what to do>.
+then one summary line per file:
+  <file>: ok, risk high (migration), signed off by <name> on <date>
+  <file>: ok, risk low, no sign-off
+  <file>: <n> problem(s)
+
+This script only reads records. It never writes one, and never fills in a
+sign-off: only the user's explicit yes does that.
+
+Exit codes: 0 every record is valid, 1 a record breaks a rule, 2 a usage
+error or a file that isn't a JSON object.
+
+Python 3 standard library only; no install step.
+"""
+
+import datetime
+import json
+import os
+import re
+import sys
+
+RISKS = ("auth", "security-boundary", "data-model", "migration", "billing", "public-api", "breaking-change")
+TIERS = ("low", "high")
+FIELDS = ("spec", "risk", "sign_off")
+RISK_FIELDS = ("tier", "risks", "reasons")
+SIGN_OFF_FIELDS = ("signed_off_by", "signed_off_on", "risks")
+
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+RULE_TEXT = {
+    "record.fields": "the record has exactly " + ", ".join(FIELDS),
+    "record.spec": "spec is the slug the file is named after (<slug>.json)",
+    "record.risk": "risk has tier (low | high), risks (unique, from the risk list; empty exactly when tier is low) and reasons (text; non-empty when tier is high)",
+    "record.sign-off": "sign_off is null, or has signed_off_by (a name), signed_off_on (a real YYYY-MM-DD date) and risks (the non-empty, unique risks shown to the person signing)",
+}
+
+USAGE = ("usage: record <specs/reviews/<slug>.json> [...]\n"
+         "       record --rules")
+
+
+class UsageError(Exception):
+    pass
+
+
+def show(value, limit=40):
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def is_text(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
+def line_of(text, name):
+    m = re.compile(r'"%s"\s*:' % re.escape(name)).search(text)
+    return text.count("\n", 0, m.start()) + 1 if m else 1
+
+
+def risk_list_problem(value, allow_empty):
+    """A problem text for a list of risks, or None."""
+    if not isinstance(value, list):
+        return "is %s, not a list" % show(value)
+    bad = [v for v in value if v not in RISKS]
+    if bad:
+        return "has %s, not one of %s" % (show(bad[0]), ", ".join(RISKS))
+    if len(set(value)) != len(value):
+        return "lists a risk twice"
+    if not value and not allow_empty:
+        return "is empty"
+    return None
+
+
+def check_record(data, text, stem):
+    """[(line, rule, field, problem, fix)] for one parsed record."""
+    out = []
+
+    def bad(name, rule, field, problem, fix):
+        out.append((line_of(text, name), rule, field, problem, fix))
+
+    missing = [f for f in FIELDS if f not in data]
+    extra = sorted(f for f in data if f not in FIELDS)
+    if missing:
+        out.append((1, "record.fields", "record", "missing " + ", ".join(missing),
+                    "add %s; sign_off is null until the user signs off" % ", ".join(missing)))
+    if extra:
+        bad(extra[0], "record.fields", "record", "unknown field%s %s" % ("s" if len(extra) > 1 else "", ", ".join(extra)),
+            "remove it; this release's record has only " + ", ".join(FIELDS))
+
+    if "spec" in data:
+        spec = data["spec"]
+        if not (isinstance(spec, str) and SLUG_RE.match(spec)):
+            bad("spec", "record.spec", "spec", "spec is %s, not a slug" % show(spec), "give the spec's slug, such as \"add-due-dates\"")
+        elif spec != stem:
+            bad("spec", "record.spec", "spec", "spec %s doesn't match the file name %s.json" % (show(spec), stem),
+                "name the file specs/reviews/<slug>.json after the spec it reviews")
+
+    if "risk" in data:
+        risk = data["risk"]
+        if not isinstance(risk, dict):
+            bad("risk", "record.risk", "risk", "risk is %s, not an object" % show(risk),
+                "give {\"tier\": ..., \"risks\": [...], \"reasons\": [...]} from `gate --risk`")
+        else:
+            missing = [f for f in RISK_FIELDS if f not in risk]
+            extra = sorted(f for f in risk if f not in RISK_FIELDS)
+            if missing:
+                bad("risk", "record.risk", "risk", "risk is missing " + ", ".join(missing), "add tier, risks and reasons")
+            if extra:
+                bad(extra[0], "record.risk", "risk", "risk has unknown field%s %s" % ("s" if len(extra) > 1 else "", ", ".join(extra)),
+                    "keep only tier, risks and reasons")
+            if "tier" in risk and risk["tier"] not in TIERS:
+                bad("tier", "record.risk", "risk.tier", "tier is %s, not low or high" % show(risk["tier"]), "use low or high")
+            if "risks" in risk:
+                problem = risk_list_problem(risk["risks"], True)
+                if problem:
+                    bad("risks", "record.risk", "risk.risks", "risks " + problem, "list each risk `gate --risk` reported, once")
+                elif risk.get("tier") in TIERS and (risk["tier"] == "high") != bool(risk["risks"]):
+                    bad("tier", "record.risk", "risk.tier", "tier is %s but risks is %s" % (show(risk["tier"]), show(risk["risks"])),
+                        "use tier high exactly when risks is non-empty")
+            if "reasons" in risk:
+                reasons = risk["reasons"]
+                if not (isinstance(reasons, list) and all(is_text(r) for r in reasons)):
+                    bad("reasons", "record.risk", "risk.reasons", "reasons is %s, not a list of text" % show(reasons),
+                        "list the reason lines `gate --risk` printed")
+                elif risk.get("tier") == "high" and not reasons:
+                    bad("reasons", "record.risk", "risk.reasons", "reasons is empty for a high-risk spec",
+                        "list the reason lines `gate --risk` printed")
+
+    if "sign_off" in data and data["sign_off"] is not None:
+        so = data["sign_off"]
+        if not isinstance(so, dict):
+            bad("sign_off", "record.sign-off", "sign_off", "sign_off is %s, not null or an object" % show(so),
+                "use null until the user signs off")
+        else:
+            missing = [f for f in SIGN_OFF_FIELDS if f not in so]
+            extra = sorted(f for f in so if f not in SIGN_OFF_FIELDS)
+            if missing:
+                bad("sign_off", "record.sign-off", "sign_off", "sign_off is missing " + ", ".join(missing),
+                    "record signed_off_by, signed_off_on and risks, from the user's explicit yes only")
+            if extra:
+                bad(extra[0], "record.sign-off", "sign_off", "sign_off has unknown field%s %s" % ("s" if len(extra) > 1 else "", ", ".join(extra)),
+                    "keep only signed_off_by, signed_off_on and risks")
+            if "signed_off_by" in so and not is_text(so["signed_off_by"]):
+                bad("signed_off_by", "record.sign-off", "sign_off.signed_off_by", "signed_off_by is %s" % show(so["signed_off_by"]),
+                    "give the name of the person who said yes")
+            if "signed_off_on" in so:
+                on = so["signed_off_on"]
+                ok = isinstance(on, str) and DATE_RE.match(on)
+                if ok:
+                    try:
+                        datetime.date(int(on[:4]), int(on[5:7]), int(on[8:]))
+                    except ValueError:
+                        ok = False
+                if not ok:
+                    bad("signed_off_on", "record.sign-off", "sign_off.signed_off_on", "signed_off_on is %s, not a YYYY-MM-DD date" % show(on),
+                        "give the date the user said yes, such as \"2026-11-27\"")
+            if "risks" in so:
+                problem = risk_list_problem(so["risks"], False)
+                if problem:
+                    bad("risks", "record.sign-off", "sign_off.risks", "risks " + problem,
+                        "list exactly the risks shown to the user when they said yes")
+    return sorted(out, key=lambda p: p[0])
+
+
+def load(path):
+    """(data, text, lines, exit code): data is None when the file can't be used."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return None, None, ["%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a specs/reviews/<slug>.json file." % (path, e)], 2
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return None, text, ["%s:%d: error [parse] file: not JSON (%s). Fix: Correct the file so it parses as a JSON object." % (path, getattr(e, "lineno", 1), getattr(e, "msg", e))], 2
+    if not isinstance(data, dict):
+        return None, text, ["%s:1: error [parse] file: the top level is %s, not an object. Fix: Make the record one JSON object." % (path, show(data, 20))], 2
+    return data, text, [], 0
+
+
+def check_file(path):
+    """(exit code, output lines, the record or None if it isn't valid)."""
+    data, text, lines, code = load(path)
+    if data is None:
+        return code, lines, None
+    stem = os.path.splitext(os.path.basename(path))[0]
+    problems = check_record(data, text, stem)
+    for line, rule, field, problem, fix in problems:
+        lines.append("%s:%d: error [%s] %s: %s. Fix: %s." % (path, line, rule, field, problem, fix[0].upper() + fix[1:]))
+    if problems:
+        lines.append("%s: %d problem%s" % (path, len(problems), "" if len(problems) == 1 else "s"))
+        return 1, lines, None
+    risk = data["risk"]
+    tier = "risk high (%s)" % ", ".join(risk["risks"]) if risk["tier"] == "high" else "risk low"
+    so = data["sign_off"]
+    signed = "signed off by %s on %s" % (so["signed_off_by"], so["signed_off_on"]) if so else "no sign-off"
+    lines.append("%s: ok, %s, %s" % (path, tier, signed))
+    return 0, lines, data
+
+
+def parse_args(argv):
+    opts = {"mode": "check", "paths": []}
+    for i, arg in enumerate(argv):
+        if arg in ("-h", "--help"):
+            opts["mode"] = "help"
+            return opts
+        if arg == "--rules":
+            opts["mode"] = "rules"
+            return opts
+        if arg == "--":
+            opts["paths"].extend(argv[i + 1:])
+            break
+        if arg.startswith("-") and arg != "-":
+            raise UsageError("unknown option %r" % arg)
+        opts["paths"].append(arg)
+    if not opts["paths"]:
+        raise UsageError("no record files given")
+    return opts
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        opts = parse_args(argv)
+    except UsageError as e:
+        sys.stderr.write("record: %s\n%s\n" % (e, USAGE))
+        return 2
+    if opts["mode"] == "help":
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    if opts["mode"] == "rules":
+        for rule_id, text in RULE_TEXT.items():
+            print("  %-18s error   %s" % (rule_id, text))
+        return 0
+    worst = 0
+    for path in opts["paths"]:
+        code, lines, _ = check_file(path)
+        for line in lines:
+            print(line)
+        worst = max(worst, code)
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main())

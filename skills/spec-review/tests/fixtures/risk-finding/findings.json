@@ -1,0 +1,26 @@
+[
+  {
+    "id": "blast-radius-1",
+    "reviewer": "blast-radius",
+    "severity": "warning",
+    "kind": "fix",
+    "rule": "blast-radius.unmentioned-contract",
+    "location": { "section": "Interfaces & Data Contracts", "line": 44, "ref": null },
+    "evidence": "stdout: `Todo[]` as JSON, each todo with exactly the fields `Todo` defines",
+    "concrete_question": "Do other tools already parse this output, making its fields a public contract?",
+    "suggested_fix": "Say whether the export's fields are a stable contract, and list its consumers under Existing:.",
+    "risk": "public-api"
+  },
+  {
+    "id": "ambiguity-1",
+    "reviewer": "ambiguity",
+    "severity": "nit",
+    "kind": "fix",
+    "rule": "ambiguity.weasel-word",
+    "location": { "section": "Goal & Non-Goals", "line": null, "ref": null },
+    "evidence": "use them in other tools",
+    "concrete_question": "Which other tools?",
+    "suggested_fix": "Name one, such as jq.",
+    "risk": null
+  }
+]

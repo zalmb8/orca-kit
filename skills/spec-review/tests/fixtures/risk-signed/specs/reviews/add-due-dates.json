@@ -1,0 +1,20 @@
+{
+  "spec": "add-due-dates",
+  "risk": {
+    "tier": "high",
+    "risks": [
+      "migration"
+    ],
+    "reasons": [
+      "specs/add-due-dates.md:37: warning [risk.migration] Interfaces & Data Contracts: says \"migrations\", which matches the term \"migrat*\" (and on 6 more lines).",
+      "specs/add-due-dates.md:43: warning [risk.migration] Interfaces & Data Contracts: names the path \"src/migrations/0002-add-due.ts\", which matches \"*/migrations/*\" (and on 7 more lines)."
+    ]
+  },
+  "sign_off": {
+    "signed_off_by": "Sam Rivera",
+    "signed_off_on": "2026-11-27",
+    "risks": [
+      "migration"
+    ]
+  }
+}

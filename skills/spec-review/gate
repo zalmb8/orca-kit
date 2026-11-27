@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Run the orca-kit:spec-review hard gates on a spec.
+"""Run the orca-kit:spec-review hard gates on a spec, and with --risk its risk tier.
 
 Usage:
   gate [--repo ROOT] <spec.md> [<spec.md> ...]
+  gate --risk [--repo ROOT] [--findings FILE ...] <spec.md> [<spec.md> ...]
   gate --gates
 
   --repo ROOT   The repo the spec belongs to: where .orca-kit/spec-review.yml
                 is read from and where a block's local "$schema" path is
                 resolved. Defaults to the nearest directory at or above the
                 spec that contains .orca-kit/ or .git.
+  --risk        After the gates, classify the spec's risk and check its
+                sign-off (below).
+  --findings F  With --risk and one spec: a reviewer's findings file, checked
+                with the findings validator; a finding's `risk` raises the
+                tier. Repeatable.
   --gates       List the gates and their rules, and exit.
 
 Gates, in order (docs/spec-review/ROADMAP.md, v0.2):
@@ -29,20 +35,44 @@ then one result line per file:
 Every gate is deterministic: the same spec and config always give the same
 output. Warnings never fail a gate.
 
-Exit codes: 0 every gate passes, 1 a gate fails, 2 a usage error, an
-unreadable spec, a spec the checker can't parse, or an invalid config.
+Risk tiering (--risk; docs/spec-review/ROADMAP.md, v0.3, and risk.md next
+to this script). Not a gate: it fails only to require a human sign-off.
+After the gates' result line it prints one warning per reason,
+  <file>:<line>: warning [risk.<risk>] <section>: <reason>. Fix: ...
+from the spec's terms and paths or from a finding's risk, then:
+  <file>: risk low
+  <file>: risk high: <risks>; signed off by <name> on <date>
+  <file>: risk high: <risks>; sign-off needed          (plus a risk.sign-off error)
+  <file>: risk high: <risks>; sign-off stale (signed for <risks>)
+A high-risk spec passes only when specs/reviews/<slug>.json (next to the
+spec, checked with the record validator) holds a sign-off whose risks equal
+the current risks. This script never writes that file.
+
+Exit codes: 0 every gate passes (and, with --risk, the spec is low risk or
+signed off), 1 a gate fails or a sign-off is missing or stale, 2 a usage
+error, an unreadable spec, a spec the checker can't parse, an invalid config,
+or (with --risk) an invalid findings file or review record.
 
 Repo settings, all optional, in <repo>/.orca-kit/spec-review.yml:
   ticket_pattern: '[A-Z][A-Z0-9]+-[0-9]+'   # Python regex; set = traceability required
   max_words: 2000                           # length ceiling, words in the body
   secret_patterns:                          # extra secret regexes (Python)
     - 'acme_[a-z0-9]{32}'
+  risk_terms:                               # replaces that risk's default terms
+    migration: ['migrat*', 'backfill*', 'flyway']
+  risk_paths:                               # replaces that risk's default globs
+    billing: ['*/billing/*', '*/plans/*']
 The file is YAML in the subset described at parse_yaml below; any other key,
-or a value of the wrong type, is a config error (exit 2).
+or a value of the wrong type, is a config error (exit 2). Risk terms are
+lowercase words, each optionally ending in '*'; risk paths are globs. The
+defaults are DEFAULT_RISK_TERMS and DEFAULT_RISK_PATHS below, and risk.md.
 
 Python 3 standard library only; no install step.
 """
 
+import fnmatch
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -56,7 +86,7 @@ CONFIG_PATH = os.path.join(".orca-kit", "spec-review.yml")
 
 GATES = ("check", "secrets", "blocks", "trace", "length")
 
-DEFAULTS = {"ticket_pattern": None, "max_words": 2000, "secret_patterns": []}
+DEFAULTS = {"ticket_pattern": None, "max_words": 2000, "secret_patterns": [], "risk_terms": {}, "risk_paths": {}}
 
 RULE_TEXT = {
     "check.<rule>": "every rule of `skills/spec/check --as accepted` (see `check --rules`), under its own name",
@@ -602,6 +632,7 @@ def load_config(repo):
     config = dict(DEFAULTS)
     config["ticket_re"] = None
     config["secret_res"] = []
+    config["risk_res"], config["risk_globs"] = risk_tables({}, {})
     if not os.path.isfile(path):
         return config, None
     try:
@@ -635,6 +666,11 @@ def load_config(repo):
             raise ConfigError("secret_patterns must be a list of quoted regexes")
         config["secret_patterns"] = sp
         config["secret_res"] = [compile_pattern(p, "secret_patterns item %d" % (n + 1)) for n, p in enumerate(sp)]
+    if data.get("risk_terms") is not None:
+        config["risk_terms"] = risk_map(data["risk_terms"], "risk_terms", check_term)
+    if data.get("risk_paths") is not None:
+        config["risk_paths"] = risk_map(data["risk_paths"], "risk_paths", check_glob)
+    config["risk_res"], config["risk_globs"] = risk_tables(config["risk_terms"], config["risk_paths"])
     return config, path
 
 
@@ -1036,6 +1072,231 @@ GATE_FUNCS = {"check": gate_check, "secrets": gate_secrets, "blocks": gate_block
 
 
 # ---------------------------------------------------------------------------
+# Risk tiering (--risk). Not a gate: it fails only to require a human
+# sign-off, recorded in specs/reviews/<slug>.json, which no script writes.
+# ---------------------------------------------------------------------------
+
+def load_sibling(name):
+    loader = importlib.machinery.SourceFileLoader("spec_review_" + name, os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+FINDINGS = load_sibling("findings")
+RECORD = load_sibling("record")
+RISKS = FINDINGS.RISKS
+
+# Terms: case-insensitive phrases matched as whole words. Words may be joined
+# by a space, '-', '_' or nothing; a word ending in '*' matches any ending.
+DEFAULT_RISK_TERMS = {
+    "auth": ["auth", "authn", "authz", "authenticat*", "authoriz*", "authoris*", "login*", "log in", "logout",
+             "log out", "sign in", "sign up", "oauth*", "saml", "sso", "openid", "oidc", "mfa", "2fa",
+             "access control*", "rbac", "acl", "acls", "permission check*", "permission model*", "user role*",
+             "roles and permissions", "password*", "credential*", "api key*", "access token*", "session token*",
+             "session cookie*"],
+    "security-boundary": ["trust boundar*", "security boundar*", "sandbox*", "cors", "csrf", "xss", "ssrf",
+                          "sql injection", "encrypt*", "decrypt*", "tls", "secret store*", "secrets manager*",
+                          "personal data", "pii", "untrusted input*"],
+    "data-model": ["data model*", "database schema*", "db schema*", "schema change*", "new table*", "new column*",
+                   "add column*", "drop column*", "drop table*", "rename column*", "foreign key*", "primary key*",
+                   "orm", "entity relationship*"],
+    "migration": ["migrat*", "backfill*", "alter table*", "schema version*", "data conversion*"],
+    "billing": ["billing", "invoic*", "payment*", "subscription*", "pricing", "price change*", "refund*",
+                "chargeback*", "credit card*", "stripe", "paddle"],
+    "public-api": ["public api*", "rest api*", "http api*", "graphql", "grpc", "api endpoint*", "http endpoint*",
+                   "rest endpoint*", "webhook*", "sdk", "sdks", "api version*", "api contract*"],
+    "breaking-change": ["breaking change*", "backward* incompatib*", "not backward* compatib*",
+                        "no longer backward* compatib*", "deprecat*"],
+}
+
+# Paths: case-insensitive globs (fnmatch; '*' also matches '/') matched
+# against each path the spec names, with a leading '/' added, so
+# `*/migrations/*` matches `db/migrations/0007.sql`.
+DEFAULT_RISK_PATHS = {
+    "auth": ["*/auth/*", "*/auth.*", "*/authn/*", "*/authz/*", "*/permissions/*", "*/permissions.*",
+             "*/rbac/*", "*/acl/*", "*/login/*", "*/login.*"],
+    "security-boundary": ["*/security/*", "*/crypto/*", "*/secrets/*", "*/sandbox/*", "*/cors.*", "*/csp.*"],
+    "data-model": ["*/models/*", "*/model/*", "*/entities/*", "*.prisma", "*/schema.rb", "*/schema.sql"],
+    "migration": ["*/migrations/*", "*/migrate/*", "*/alembic/*", "*/flyway/*", "*/liquibase/*"],
+    "billing": ["*/billing/*", "*/payments/*", "*/payment/*", "*/invoices/*", "*/subscriptions/*", "*/stripe/*"],
+    "public-api": ["*/openapi.*", "*/swagger.*", "*.proto", "*.graphql", "*/api/*", "*/routes/*"],
+    "breaking-change": [],
+}
+
+TERM_RE = re.compile(r"^[a-z0-9]+\*?(?: [a-z0-9]+\*?)*$")
+PATH_TOKEN_RE = re.compile(r"[\w.@*-]*(?:/[\w.@*-]+)+/?|[\w@-]+(?:\.[\w-]+)*\.[A-Za-z]\w*")
+
+RISK_RULE_TEXT = dict(
+    [("risk.%s" % r, "warning: a reason the spec is high risk for %s (a term or path the spec names, or a finding)" % r) for r in RISKS]
+    + [("risk.sign-off", "a high-risk spec has a sign-off in specs/reviews/<slug>.json whose risks match the current risks exactly"),
+       ("risk.findings", "every --findings file passes the findings validator"),
+       ("risk.record", "specs/reviews/<slug>.json, if present, passes the record validator")])
+
+Reason = namedtuple("Reason", "risk line section message")
+
+
+def term_regex(term):
+    words = []
+    for word in term.split(" "):
+        words.append(re.escape(word[:-1]) + r"\w*" if word.endswith("*") else re.escape(word))
+    return re.compile(r"(?<![\w])" + r"[\s_-]*".join(words) + r"(?![\w])", re.I)
+
+
+def risk_map(value, key, check):
+    """{area: [entry]} from a settings value, or raise ConfigError."""
+    if not isinstance(value, dict):
+        raise ConfigError("%s must be a mapping from a risk (%s) to a list" % (key, ", ".join(RISKS)))
+    out = {}
+    for area, entries in value.items():
+        if area not in RISKS:
+            raise ConfigError("%s has unknown risk %s; the risks are %s" % (key, json.dumps(area), ", ".join(RISKS)))
+        if entries is None:
+            entries = []
+        if not isinstance(entries, list):
+            raise ConfigError("%s.%s must be a list" % (key, area))
+        for n, entry in enumerate(entries):
+            check(entry, "%s.%s item %d" % (key, area, n + 1))
+        out[area] = list(entries)
+    return out
+
+
+def check_term(entry, where):
+    if not (isinstance(entry, str) and TERM_RE.match(entry)):
+        raise ConfigError("%s is %s; a term is lowercase words, each optionally ending in '*'" % (where, json.dumps(entry)))
+
+
+def check_glob(entry, where):
+    if not (isinstance(entry, str) and entry.strip()):
+        raise ConfigError("%s must be a non-empty quoted glob" % where)
+
+
+def risk_tables(terms, paths):
+    """(term regexes, globs) per area: the defaults, with each configured area replaced."""
+    res = {}
+    globs = {}
+    for area in RISKS:
+        res[area] = [(t, term_regex(t)) for t in terms.get(area, DEFAULT_RISK_TERMS[area])]
+        globs[area] = [g.lower() for g in paths.get(area, DEFAULT_RISK_PATHS[area])]
+    return res, globs
+
+
+def path_candidates(line):
+    out = []
+    for m in PATH_TOKEN_RE.finditer(line):
+        tok = m.group(0).rstrip(".")
+        if tok.startswith("./"):
+            tok = tok[2:]
+        if tok:
+            out.append((tok, "/" + tok.lower().lstrip("/")))
+    return out
+
+
+def classify(doc, config):
+    """[Reason] from the spec body: one per risk and matching glob or term, at its first line.
+
+    On each line a risk's paths are tried before its terms, and only the
+    first match counts; later lines matching the same glob or term are
+    counted, not repeated.
+    """
+    first = {}  # (risk, glob or term) -> [line, message, other lines]
+    order = []
+    for i in range(doc.body_start, len(doc.lines)):
+        line = doc.lines[i]
+        no = i + 1
+        candidates = None
+        for area in RISKS:
+            hit = None
+            if config["risk_globs"][area]:
+                if candidates is None:
+                    candidates = path_candidates(line)
+                for tok, cand in candidates:
+                    glob = next((g for g in config["risk_globs"][area] if fnmatch.fnmatchcase(cand, g)), None)
+                    if glob:
+                        hit = (glob, "names the path %s, which matches %s" % (json.dumps(tok), json.dumps(glob)))
+                        break
+            if not hit:
+                for term, regex in config["risk_res"][area]:
+                    m = regex.search(line)
+                    if m:
+                        hit = (term, "says %s, which matches the term %s" % (json.dumps(m.group(0)), json.dumps(term)))
+                        break
+            if hit:
+                key = (area, hit[0])
+                if key in first:
+                    first[key][2] += 1
+                else:
+                    first[key] = [no, hit[1], 0]
+                    order.append(key)
+    out = []
+    for key in order:
+        no, message, more = first[key]
+        if more:
+            message += " (and on %d more line%s)" % (more, "" if more == 1 else "s")
+        out.append(Reason(key[0], no, doc.section(no), message))
+    return out
+
+
+def finding_reasons(paths):
+    """([Reason], error lines). Error lines mean a findings file isn't valid."""
+    reasons, errors = [], []
+    for path in paths:
+        code, lines = FINDINGS.check_file(path)
+        if code:
+            errors.extend(lines)
+            continue
+        with open(path, encoding="utf-8") as f:
+            for finding in json.load(f):
+                if finding["risk"] is None:
+                    continue
+                loc = finding["location"]
+                reasons.append(Reason(finding["risk"], loc["line"] or 1, loc["section"],
+                                      "finding %s (%s %s from %s) raises it" % (
+                                          finding["id"], finding["severity"], finding["kind"], finding["reviewer"])))
+    return reasons, errors
+
+
+def record_path(spec_path):
+    slug = os.path.splitext(os.path.basename(spec_path))[0]
+    return os.path.join(os.path.dirname(spec_path), "reviews", slug + ".json")
+
+
+def risk_step(path, doc, config, findings_paths):
+    """(exit code, output lines) for the risk tier and sign-off of one spec."""
+    reasons, errors = finding_reasons(findings_paths)
+    if errors:
+        return 2, errors + ["%s:1: error [risk.findings] file: a findings file isn't valid, so the risk tier isn't computed. "
+                            "Fix: Correct the findings the validator rejected, or leave them out, and re-run." % path]
+    reasons = classify(doc, config) + reasons
+    reasons.sort(key=lambda r: (r.line, RISKS.index(r.risk), r.message))
+    risks = sorted({r.risk for r in reasons}, key=RISKS.index)
+    rec = record_path(path)
+    fix = "Show the user these risks and reasons; a high-risk spec needs their sign-off in %s" % rec
+    lines = ["%s:%d: warning [risk.%s] %s: %s. Fix: %s." % (path, r.line, r.risk, r.section, r.message, fix) for r in reasons]
+    if not risks:
+        return 0, lines + ["%s: risk low" % path]
+    shown = ", ".join(risks)
+    ask = "Show the user the risks and reasons and ask whether they sign off; record it only on their explicit yes"
+    if not os.path.isfile(rec):
+        lines.append("%s:1: error [risk.sign-off] file: high risk (%s) and no review record at %s. Fix: %s." % (path, shown, rec, ask))
+        return 1, lines + ["%s: risk high: %s; sign-off needed" % (path, shown)]
+    code, rec_lines, data = RECORD.check_file(rec)
+    if data is None:
+        return 2, lines + rec_lines + ["%s:1: error [risk.record] file: the review record %s isn't valid. "
+                                       "Fix: Correct it; `record --help` shows the format." % (path, rec)]
+    so = data["sign_off"]
+    if so is None:
+        lines.append("%s:1: error [risk.sign-off] file: high risk (%s) and %s has no sign-off. Fix: %s." % (path, shown, rec, ask))
+        return 1, lines + ["%s: risk high: %s; sign-off needed" % (path, shown)]
+    signed = sorted(so["risks"], key=RISKS.index)
+    if signed != risks:
+        lines.append("%s:1: error [risk.sign-off] file: the sign-off by %s on %s covers %s, but the risks are now %s. Fix: %s." % (
+            path, so["signed_off_by"], so["signed_off_on"], ", ".join(signed), shown, ask + "; an old sign-off never carries over"))
+        return 1, lines + ["%s: risk high: %s; sign-off stale (signed for %s)" % (path, shown, ", ".join(signed))]
+    return 0, lines + ["%s: risk high: %s; signed off by %s on %s" % (path, shown, so["signed_off_by"], so["signed_off_on"])]
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -1044,8 +1305,8 @@ def format_problem(path, p):
     return "%s:%d: %s [%s] %s: %s. Fix: %s." % (path, p.line, p.severity, p.rule, p.section, p.message, fix)
 
 
-def gate_file(path, repo_opt):
-    """(exit code, output lines) for one spec."""
+def gate_file(path, repo_opt, risk=False, findings_paths=()):
+    """(exit code, output lines) for one spec; with risk, the risk tier and sign-off too."""
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
@@ -1078,15 +1339,21 @@ def gate_file(path, repo_opt):
                                                  "; passed: " + ", ".join(passed) if passed else ""))
     else:
         lines.append("%s: gates ok: %s" % (path, ", ".join(GATES)))
-    return (2 if parse_error else 1 if failed else 0), lines
+    code = 2 if parse_error else 1 if failed else 0
+    if risk:
+        risk_code, risk_lines = risk_step(path, doc, config, findings_paths)
+        lines.extend(risk_lines)
+        code = max(code, risk_code)
+    return code, lines
 
 
 USAGE = ("usage: gate [--repo ROOT] <spec.md> [<spec.md> ...]\n"
+         "       gate --risk [--repo ROOT] [--findings FILE ...] <spec.md> [<spec.md> ...]\n"
          "       gate --gates")
 
 
 def parse_args(argv):
-    opts = {"mode": "gate", "repo": None, "paths": []}
+    opts = {"mode": "gate", "repo": None, "paths": [], "risk": False, "findings": []}
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -1096,6 +1363,20 @@ def parse_args(argv):
         if arg == "--gates":
             opts["mode"] = "gates"
             return opts
+        if arg == "--risk":
+            opts["risk"] = True
+            i += 1
+            continue
+        if arg == "--findings" or arg.startswith("--findings="):
+            if arg == "--findings":
+                if i + 1 >= len(argv):
+                    raise UsageError("--findings needs a value")
+                opts["findings"].append(argv[i + 1])
+                i += 2
+            else:
+                opts["findings"].append(arg[len("--findings="):])
+                i += 1
+            continue
         if arg == "--repo" or arg.startswith("--repo="):
             if arg == "--repo":
                 if i + 1 >= len(argv):
@@ -1117,6 +1398,10 @@ def parse_args(argv):
         raise UsageError("--repo %r is not a directory" % opts["repo"])
     if not opts["paths"]:
         raise UsageError("no spec files given")
+    if opts["findings"] and not opts["risk"]:
+        raise UsageError("--findings needs --risk")
+    if opts["findings"] and len(opts["paths"]) > 1:
+        raise UsageError("--findings applies to one spec; give exactly one")
     return opts
 
 
@@ -1137,10 +1422,14 @@ def main(argv=None):
                 if rule_id.split(".")[0] == name or (name == "secrets" and rule_id.startswith("pii.")):
                     sev = "warning" if text.startswith("warning:") else "error"
                     print("  %-26s %-7s %s" % (rule_id, sev, text[len("warning: "):] if sev == "warning" else text))
+        print("risk (with --risk; not a gate, it fails only to require a sign-off):")
+        for rule_id, text in RISK_RULE_TEXT.items():
+            sev = "warning" if text.startswith("warning:") else "error"
+            print("  %-26s %-7s %s" % (rule_id, sev, text[len("warning: "):] if sev == "warning" else text))
         return 0
     worst = 0
     for path in opts["paths"]:
-        code, lines = gate_file(path, opts["repo"])
+        code, lines = gate_file(path, opts["repo"], opts["risk"], opts["findings"])
         for line in lines:
             print(line)
         worst = max(worst, code)
