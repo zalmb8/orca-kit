@@ -78,11 +78,11 @@ Each is an agent in `agents/` with one rubric and a fixed context budget. The sk
 
 Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version` with each one.
 
-### v0.1: Skeleton and findings format
-- [ ] `skills/spec-review/SKILL.md` with a description that triggers on the review phrases and states the core rules.
-- [ ] `skills/spec-review/findings.schema.json` and `skills/spec-review/findings` script (Python 3, stdlib only) that validates reviewer output and prints a summary by severity.
-- [ ] Failing fixtures for each malformed-finding case and a stdlib test runner: `python3 -m unittest discover -s skills/spec-review/tests`.
-- [ ] **Done when:** the skill loads as `orca-kit:spec-review`, and malformed findings (bad severity, no location, no concrete question) are rejected with the reason.
+### v0.1: Skeleton and findings format ✅
+- [x] `skills/spec-review/SKILL.md` with a description that triggers on the review phrases and states the core rules.
+- [x] `skills/spec-review/findings.schema.json` and `skills/spec-review/findings` script (Python 3, stdlib only) that validates reviewer output and prints a summary by severity.
+- [x] Failing fixtures for each malformed-finding case and a stdlib test runner: `python3 -m unittest discover -s skills/spec-review/tests`.
+- [x] **Done when:** the skill loads as `orca-kit:spec-review`, and malformed findings (bad severity, no location, no concrete question) are rejected with the reason.
 
 ### v0.2: Hard gates
 - [ ] `skills/spec-review/gate` script, called through `${CLAUDE_PLUGIN_ROOT}`, running every gate and exiting non-zero on any failure.
@@ -145,3 +145,12 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | Review results live in `specs/reviews/<slug>.json`, committed with the spec | They're versioned with what they reviewed, and a JSON file in a subdirectory doesn't trip `check specs/*.md`. |
 | Repo settings live in `.orca-kit/spec-review.yml`, all optional | The skill works with no setup; repos tune ticket patterns, ceilings and risk paths as needed. |
 | Graduation proposes rules; it doesn't add them | Changing the checker is its own reviewed change. |
+| A findings file is a JSON array of finding objects | The smallest shape a reviewer can return; the review record (`specs/reviews/<slug>.json`) can hold these arrays per pass later. |
+| Every field is required; only `location.line`, `location.ref` and `risk` may be `null`; unknown fields are rejected | A typed finding with a typo'd or missing field would otherwise slip through. A section is always known, but a line or ID may not be. |
+| A missing field is reported under that field's own rule (`finding.location`, `finding.concrete-question`, …) | "No location" reads as a location problem, and rule keys stay one per field. |
+| `rule` must be `<reviewer>.<key>`, prefixed by the finding's `reviewer` | Keeps rule keys stable and namespaced, so graduation counts can't mix two rubrics' rules. |
+| `concrete_question` must end in `?`, and text fields must be non-empty | A deterministic check that it is a question at all; judging whether it is concrete is a reviewer's job. |
+| `id` is lowercase (`[a-z0-9.-]`) and unique within a file | Duplicate or free-form IDs can't be referenced or deduplicated reliably. |
+| The validator is written by hand; `findings.schema.json` documents the same format, and a test checks they agree | Stdlib only, no `jsonschema` install, and the two can't silently drift. |
+| A file that isn't JSON, or isn't a top-level array, exits 2; a rejected finding exits 1 | Matches the spec checker: 2 is a parse or usage error, 1 a rule failure. |
+| Problem lines name the finding as `finding #<n> (<id>)`, at the line of the offending field | The index finds a finding with no valid ID; the line lets an editor jump to it. |

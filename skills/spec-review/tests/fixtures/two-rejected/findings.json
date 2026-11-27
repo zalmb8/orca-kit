@@ -1,0 +1,61 @@
+[
+  {
+    "id": "ambiguity-3",
+    "reviewer": "ambiguity",
+    "severity": "critical",
+    "kind": "fix",
+    "rule": "ambiguity.weasel-word",
+    "location": {
+      "section": "Behavior & Edge Cases",
+      "line": 42,
+      "ref": "AC-3"
+    },
+    "evidence": "then the export fails gracefully",
+    "concrete_question": "What exactly happens on a write error: exit code, message, partial file?",
+    "suggested_fix": "Replace 'fails gracefully' with: exits 1, prints `cannot write <path>`, leaves no file.",
+    "risk": null
+  },
+  {
+    "id": "security-1",
+    "reviewer": "security",
+    "severity": "blocker",
+    "kind": "decision",
+    "rule": "security.trust-boundary",
+    "location": {
+      "section": "Interfaces & Data Contracts",
+      "line": 30,
+      "ref": null
+    },
+    "evidence": "the export includes every user's todos",
+    "concrete_question": "Should the export include only the signed-in user's todos, or every user's?",
+    "suggested_fix": "State whose todos are exported, and add an AC for a user who has none.",
+    "risk": "auth"
+  },
+  {
+    "id": "blast-radius-2",
+    "reviewer": "blast-radius",
+    "severity": "warning",
+    "kind": "fix",
+    "rule": "blast-radius.unmentioned-contract",
+    "location": {
+      "section": "Interfaces & Data Contracts",
+      "line": null,
+      "ref": null
+    },
+    "evidence": "New: `Todo.toJSON()`",
+    "concrete_question": "Does the sync service already serialise Todo, and must the two formats match?",
+    "suggested_fix": "List `src/sync/serialize.ts` under Existing: and say whether the format is shared.",
+    "risk": "public-api"
+  },
+  {
+    "id": "slicer-1",
+    "reviewer": "slicer",
+    "severity": "nit",
+    "kind": "fix",
+    "rule": "slicer.split",
+    "evidence": "Export todos as JSON and CSV",
+    "concrete_question": "Can CSV ship as a separate spec after JSON?",
+    "suggested_fix": "Move CSV to a Non-goal and capture it as its own idea.",
+    "risk": null
+  }
+]

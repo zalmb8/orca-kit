@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Validate orca-kit:spec-review findings files, and summarise them by severity.
+
+Usage:
+  findings <findings.json> [<findings.json> ...]
+  findings --rules
+
+  --rules       List the rules each finding is checked against, and exit.
+
+A findings file is a JSON array of finding objects, in the format of
+findings.schema.json next to this script (docs/spec-review/ROADMAP.md,
+"Findings format"). Every field is required; `location.line`,
+`location.ref` and `risk` may be null.
+
+Prints one line per rejected finding problem:
+  <file>:<line>: error [<rule>] finding #<n> (<id>): <problem>. Fix: <what to do>.
+where <n> counts findings from 1 and <line> is the line of the offending
+field in the file. Then one summary line per file, counting only the
+findings that passed:
+  <file>: ok, <n> findings: <b> blocker (<d> decision), <w> warning, <k> nit
+  <file>: <r> rejected, <n> kept: <b> blocker (<d> decision), <w> warning, <k> nit
+
+A rejected finding is dropped, never repaired or guessed at.
+
+Exit codes: 0 every finding in every file is valid, 1 a finding is rejected,
+2 a usage error or a file that isn't a JSON array.
+
+Python 3 standard library only; no install step.
+"""
+
+import json
+import re
+import sys
+
+# ---------------------------------------------------------------------------
+# The findings format. findings.schema.json states the same thing as JSON
+# Schema; tests/test_findings.py checks that the two agree.
+# ---------------------------------------------------------------------------
+
+SEVERITIES = ("blocker", "warning", "nit")
+KINDS = ("fix", "decision")
+RISKS = ("auth", "security-boundary", "data-model", "migration", "billing", "public-api", "breaking-change")
+FIELDS = ("id", "reviewer", "severity", "kind", "rule", "location", "evidence",
+          "concrete_question", "suggested_fix", "risk")
+LOCATION_FIELDS = ("section", "line", "ref")
+
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
+REVIEWER_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+RULE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+$")
+
+RULE_TEXT = {
+    "finding.object": "each finding is a JSON object",
+    "finding.fields": "no fields other than " + ", ".join(FIELDS),
+    "finding.id": "id is lowercase letters, digits, '.' and '-', and unique in the file",
+    "finding.reviewer": "reviewer is a lowercase, hyphenated name",
+    "finding.severity": "severity is " + " | ".join(SEVERITIES),
+    "finding.kind": "kind is " + " | ".join(KINDS),
+    "finding.rule": "rule is '<reviewer>.<key>', a stable lowercase key",
+    "finding.location": "location is an object with section (text), line (integer >= 1 or null) and ref (text or null)",
+    "finding.evidence": "evidence is non-empty text",
+    "finding.concrete-question": "concrete_question is non-empty text ending in '?'",
+    "finding.suggested-fix": "suggested_fix is non-empty text",
+    "finding.risk": "risk is null or " + " | ".join(RISKS),
+}
+
+# What to do about a missing field. A missing field is reported under that
+# field's own rule, so "no location" reads as a location problem.
+MISSING_FIX = {
+    "id": "add an id unique in the file, such as \"ambiguity-3\"",
+    "reviewer": "add the reviewer's name, such as \"ambiguity\"",
+    "severity": "add severity: blocker, warning or nit",
+    "kind": "add kind: fix or decision",
+    "rule": "add the rubric's rule key, such as \"ambiguity.weasel-word\"",
+    "location": "add location: {\"section\": ..., \"line\": ..., \"ref\": ...}, with null for an unknown line or ref",
+    "evidence": "add evidence: the spec text the finding is about",
+    "concrete_question": "add concrete_question: the one question that resolves the finding",
+    "suggested_fix": "add suggested_fix: what to change in the spec",
+    "risk": "add risk: null, or the risk area the finding touches",
+}
+
+
+def rule_of(field):
+    return "finding." + field.replace("_", "-")
+
+
+USAGE = ("usage: findings <findings.json> [<findings.json> ...]\n"
+         "       findings --rules")
+
+
+class UsageError(Exception):
+    pass
+
+
+def show(value, limit=40):
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def is_text(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def line_of(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def elements(text):
+    """[(value, start offset, end offset)] for each element of the top-level JSON array.
+
+    Raises ValueError (json.JSONDecodeError) if the text isn't JSON, and
+    TypeError if it is JSON but not an array.
+    """
+    whole = json.loads(text)
+    if not isinstance(whole, list):
+        raise TypeError("the top level is %s, not an array of findings" % type(whole).__name__.replace("dict", "an object"))
+    decoder = json.JSONDecoder()
+    ws = re.compile(r"[ \t\n\r]*")
+    i = ws.match(text, 0).end() + 1  # past the '['
+    found = []
+    while len(found) < len(whole):
+        i = ws.match(text, i).end()
+        if text[i] == ",":
+            i = ws.match(text, i + 1).end()
+        value, end = decoder.raw_decode(text, i)
+        found.append((value, i, end))
+        i = end
+    return found
+
+
+def field_line(text, start, end, name):
+    """The line of `"name":` inside text[start:end], or of start if it isn't there."""
+    m = re.compile(r'"%s"\s*:' % re.escape(name)).search(text, start, end)
+    return line_of(text, m.start() if m else start)
+
+
+def check_finding(finding, text, start, end):
+    """[(line, rule, problem, fix)] for one finding."""
+    out = []
+
+    def bad(name, rule, problem, fix):
+        out.append((field_line(text, start, end, name) if name else line_of(text, start), rule, problem, fix))
+
+    if not isinstance(finding, dict):
+        bad(None, "finding.object", "it is %s, not an object" % show(finding),
+            "make each element of the array a finding object")
+        return out
+    for name in FIELDS:
+        if name not in finding:
+            bad(None, rule_of(name), "%s is missing" % name, MISSING_FIX[name])
+    extra = sorted(f for f in finding if f not in FIELDS)
+    if extra:
+        bad(extra[0], "finding.fields", "unknown field%s %s" % ("s" if len(extra) > 1 else "", ", ".join(extra)),
+            "remove it, or rename it to one of " + ", ".join(FIELDS))
+
+    def has(name):
+        return name in finding
+
+    if has("id") and not (isinstance(finding["id"], str) and ID_RE.match(finding["id"])):
+        bad("id", "finding.id", "id is %s" % show(finding["id"]),
+            "use a lowercase id such as \"ambiguity-3\"")
+    if has("reviewer") and not (isinstance(finding["reviewer"], str) and REVIEWER_RE.match(finding["reviewer"])):
+        bad("reviewer", "finding.reviewer", "reviewer is %s" % show(finding["reviewer"]),
+            "use the reviewer's lowercase, hyphenated name, such as \"ambiguity\"")
+    if has("severity") and finding["severity"] not in SEVERITIES:
+        bad("severity", "finding.severity", "severity is %s, not one of %s" % (show(finding["severity"]), ", ".join(SEVERITIES)),
+            "use blocker, warning or nit")
+    if has("kind") and finding["kind"] not in KINDS:
+        bad("kind", "finding.kind", "kind is %s, not one of %s" % (show(finding["kind"]), ", ".join(KINDS)),
+            "use fix if the author can resolve it from the spec and repo, or decision if it needs the user")
+    if has("rule"):
+        rule = finding["rule"]
+        reviewer = finding.get("reviewer")
+        if not (isinstance(rule, str) and RULE_RE.match(rule)):
+            bad("rule", "finding.rule", "rule is %s" % show(rule),
+                "use '<reviewer>.<key>', such as \"ambiguity.weasel-word\"")
+        elif isinstance(reviewer, str) and REVIEWER_RE.match(reviewer) and not rule.startswith(reviewer + "."):
+            bad("rule", "finding.rule", "rule %s doesn't start with the reviewer %s" % (show(rule), show(reviewer + ".")),
+                "prefix the rubric's key with the reviewer's name")
+    if has("location"):
+        loc = finding["location"]
+        if not isinstance(loc, dict):
+            bad("location", "finding.location", "location is %s, not an object" % show(loc),
+                "give {\"section\": ..., \"line\": ..., \"ref\": ...}")
+        else:
+            missing = [f for f in LOCATION_FIELDS if f not in loc]
+            extra = sorted(f for f in loc if f not in LOCATION_FIELDS)
+            if missing:
+                bad("location", "finding.location", "location is missing " + ", ".join(missing),
+                    "add section, line and ref; use null for an unknown line or ref")
+            if extra:
+                bad("location", "finding.location", "location has unknown field%s %s" % ("s" if len(extra) > 1 else "", ", ".join(extra)),
+                    "keep only section, line and ref")
+            if "section" in loc and not is_text(loc["section"]):
+                bad("location", "finding.location", "location.section is %s" % show(loc["section"]),
+                    "name the spec section the finding is about, such as \"Behavior & Edge Cases\"")
+            if "line" in loc and loc["line"] is not None and not (is_int(loc["line"]) and loc["line"] >= 1):
+                bad("location", "finding.location", "location.line is %s" % show(loc["line"]),
+                    "give the spec line number, counting from 1, or null")
+            if "ref" in loc and loc["ref"] is not None and not is_text(loc["ref"]):
+                bad("location", "finding.location", "location.ref is %s" % show(loc["ref"]),
+                    "give the AC, decision or edge-case ID, such as \"AC-3\", or null")
+    for name, rule, fix in (("evidence", "finding.evidence", "quote the spec text the finding is about"),
+                            ("suggested_fix", "finding.suggested-fix", "say what to change in the spec")):
+        if has(name) and not is_text(finding[name]):
+            bad(name, rule, "%s is %s" % (name, show(finding[name])), fix)
+    if has("concrete_question"):
+        q = finding["concrete_question"]
+        if not is_text(q):
+            bad("concrete_question", "finding.concrete-question", "concrete_question is %s" % show(q),
+                "ask the one question that resolves the finding")
+        elif not q.rstrip().endswith("?"):
+            bad("concrete_question", "finding.concrete-question", "concrete_question %s isn't a question" % show(q),
+                "phrase it as one question ending in '?'")
+    if has("risk") and finding["risk"] is not None and finding["risk"] not in RISKS:
+        bad("risk", "finding.risk", "risk is %s, not null or one of %s" % (show(finding["risk"]), ", ".join(RISKS)),
+            "use null, or the risk area the finding touches")
+    return out
+
+
+def check_file(path):
+    """(exit code, output lines) for one findings file."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return 2, ["%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a findings .json file." % (path, e)]
+    try:
+        items = elements(text)
+    except ValueError as e:
+        return 2, ["%s:%d: error [parse] file: not JSON (%s). Fix: Correct the file so it parses as a JSON array of findings." % (path, getattr(e, "lineno", 1), getattr(e, "msg", e))]
+    except TypeError as e:
+        return 2, ["%s:1: error [parse] file: %s. Fix: Wrap the findings in a JSON array." % (path, e)]
+
+    lines = []
+    kept = []
+    rejected = 0
+    seen = {}
+    for n, (finding, start, end) in enumerate(items, 1):
+        problems = check_finding(finding, text, start, end)
+        fid = finding.get("id") if isinstance(finding, dict) else None
+        valid_id = isinstance(fid, str) and ID_RE.match(fid)
+        if valid_id:
+            if fid in seen:
+                problems.append((field_line(text, start, end, "id"), "finding.id",
+                                 "id %s is already used by finding #%d" % (show(fid), seen[fid]),
+                                 "give each finding its own id"))
+            else:
+                seen[fid] = n
+        where = "finding #%d (%s)" % (n, fid) if valid_id else "finding #%d" % n
+        for line, rule, problem, fix in sorted(problems, key=lambda p: p[0]):
+            lines.append("%s:%d: error [%s] %s: %s. Fix: %s." % (path, line, rule, where, problem, fix[0].upper() + fix[1:]))
+        if problems:
+            rejected += 1
+        else:
+            kept.append(finding)
+
+    count = dict((s, sum(1 for f in kept if f["severity"] == s)) for s in SEVERITIES)
+    decisions = sum(1 for f in kept if f["severity"] == "blocker" and f["kind"] == "decision")
+    tally = "%d blocker (%d decision), %d warning, %d nit" % (count["blocker"], decisions, count["warning"], count["nit"])
+    if rejected:
+        lines.append("%s: %d rejected, %d kept: %s" % (path, rejected, len(kept), tally))
+    else:
+        lines.append("%s: ok, %d finding%s: %s" % (path, len(kept), "" if len(kept) == 1 else "s", tally))
+    return (1 if rejected else 0), lines
+
+
+def parse_args(argv):
+    opts = {"mode": "check", "paths": []}
+    for i, arg in enumerate(argv):
+        if arg in ("-h", "--help"):
+            opts["mode"] = "help"
+            return opts
+        if arg == "--rules":
+            opts["mode"] = "rules"
+            return opts
+        if arg == "--":
+            opts["paths"].extend(argv[i + 1:])
+            break
+        if arg.startswith("-") and arg != "-":
+            raise UsageError("unknown option %r" % arg)
+        opts["paths"].append(arg)
+    if not opts["paths"]:
+        raise UsageError("no findings files given")
+    return opts
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        opts = parse_args(argv)
+    except UsageError as e:
+        sys.stderr.write("findings: %s\n%s\n" % (e, USAGE))
+        return 2
+    if opts["mode"] == "help":
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    if opts["mode"] == "rules":
+        for rule_id, text in RULE_TEXT.items():
+            print("  %-26s error   %s" % (rule_id, text))
+        return 0
+    worst = 0
+    for path in opts["paths"]:
+        code, lines = check_file(path)
+        for line in lines:
+            print(line)
+        worst = max(worst, code)
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main())
