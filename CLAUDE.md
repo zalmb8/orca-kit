@@ -10,6 +10,7 @@ A Claude Code plugin of personal skills and agents for driving AI software devel
 - `agents/<name>.md` — subagent definitions.
 - `templates/skill/` — copy this to start a new skill.
 - `docs/<skill>/` — design and implementation plan for each skill (e.g. `docs/spec/ROADMAP.md`).
+- `skills/spec/check` and `skills/spec/tests/` — the spec checker and its tests: `python3 -m unittest discover -s skills/spec/tests`.
 
 ## Conventions
 

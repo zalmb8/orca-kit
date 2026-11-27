@@ -1,0 +1,857 @@
+#!/usr/bin/env python3
+"""Check orca-kit:spec files against the rules for the status they claim.
+
+Usage:
+  check [--as STATUS] <spec.md> [<spec.md> ...]
+  check --rules
+
+  --as STATUS   Check the content as if the spec claimed STATUS (idea, draft or
+                accepted). Refine uses `--as accepted` on a draft before asking
+                the user to accept it. The accepted_by/accepted_on rules are
+                skipped, because only the user's yes can satisfy them.
+  --rules       List the rules checked at each status, and exit.
+
+Prints one line per problem:
+  <file>:<line>: <error|warning> [<rule>] <section>: <problem>. Fix: <what to do>.
+and `<file>: ok (<status>)` for a file with no errors.
+
+Exit codes: 0 every file passes, 1 a rule fails, 2 a usage or parse error.
+Warnings never change the exit code.
+
+Python 3 standard library only; no install step.
+"""
+
+import datetime
+import os
+import re
+import sys
+from collections import namedtuple
+
+# ---------------------------------------------------------------------------
+# Word budgets, per section. Specs stay short so they don't flood an agent's
+# context. Words are whitespace-separated tokens; table pipes don't count.
+# ---------------------------------------------------------------------------
+
+WORD_BUDGETS = {
+    # section: budget            # size of the example in examples/
+    "Goal": 80,                    # idea: 23
+    "Context": 150,                # idea: 31
+    "Open Questions": 150,         # idea: 44
+    "Goal & Non-Goals": 200,       # accepted: 96
+    "Environment & Commands": 150, # accepted: 47
+    "Interfaces & Data Contracts": 300,  # accepted: 117
+    "Behavior & Edge Cases": 800,  # accepted: 364, for 6 ACs
+    "Boundaries & Decision Log": 700,    # accepted: 386, for 6 decisions
+    "Verification Gate": 250,      # accepted: 68, for 6 ACs
+}
+
+# What an over-budget section is, at each status. An accepted spec is what an
+# agent loads, so it must fit; earlier statuses are still being written, and
+# done/superseded specs are no longer edited by this skill.
+BUDGET_SEVERITY = {
+    "idea": "warning",
+    "draft": "warning",
+    "accepted": "error",
+    "done": "warning",
+    "superseded": "warning",
+}
+
+# ---------------------------------------------------------------------------
+# Status rules: the single place that maps each status to the rules it must
+# meet. Each rule id below quotes the part of the status rules table
+# (docs/spec/ROADMAP.md, skills/spec/SKILL.md) or release it enforces. Change
+# a status's rules here; the functions further down only implement them.
+# ---------------------------------------------------------------------------
+
+RULE_TEXT = {
+    # Frontmatter, for every status.
+    "frontmatter.fields": "id, title, status, created, updated, accepted_by and accepted_on are present",
+    "frontmatter.id": "id equals the file name (specs/<slug>.md)",
+    "frontmatter.status": "status is idea | draft | accepted | done | superseded",
+    "frontmatter.dates": "dates are YYYY-MM-DD",
+    "frontmatter.unaccepted": "accepted_by and accepted_on stay empty until the user accepts",
+    "frontmatter.accepted": "accepted: accepted_by and accepted_on are set",
+    # idea row.
+    "idea.sections": "idea: Goal, Context, Open Questions",
+    "idea.goal-length": "idea: Goal (1-3 sentences)",
+    # draft row.
+    "spec.sections": "draft: all six sections exist (the six headings, in order, no others)",
+    "ac.only": "draft: every behavior is an AC",
+    "ac.format": "v0.3: each AC has an ID (AC-n) and a Given/When/Then description",
+    "ac.verify-or-tbd": "draft: every AC has a verify: line or a TBD: line",
+    "edge.table": "v0.3: a required edge-case table",
+    "edge.ac": "draft: every edge-case row points to an AC",
+    "guard.labels": "draft: Non-goals:, Always:, Ask First:, Never: lists and a Decision Log:",
+    # accepted row.
+    "spec.filled": "accepted: all six sections are filled in",
+    "ac.verify": "accepted: every AC has a verify: line",
+    "guard.items": "accepted: Non-goals, Always, Ask First and Never each have at least one item",
+    "guard.decisions": "accepted: the Decision Log has at least one entry with why:, rejected: and source: lines",
+    "no-tbd": "accepted: no TBDs anywhere",
+    "no-open-questions": "accepted: no open questions anywhere",
+    # Word budgets (WORD_BUDGETS above).
+    "budget": "word budget per section",
+}
+
+FRONTMATTER_RULES = ["frontmatter.fields", "frontmatter.id", "frontmatter.status", "frontmatter.dates"]
+
+DRAFT_CONTENT_RULES = [
+    "spec.sections", "ac.only", "ac.format", "ac.verify-or-tbd",
+    "edge.table", "edge.ac", "guard.labels", "budget",
+]
+
+ACCEPTED_CONTENT_RULES = [
+    "spec.sections", "spec.filled", "ac.only", "ac.format", "ac.verify",
+    "edge.table", "edge.ac", "guard.labels", "guard.items", "guard.decisions",
+    "no-tbd", "no-open-questions", "budget",
+]
+
+STATUS_RULES = {
+    "idea": FRONTMATTER_RULES + ["frontmatter.unaccepted", "idea.sections", "idea.goal-length", "budget"],
+    "draft": FRONTMATTER_RULES + ["frontmatter.unaccepted"] + DRAFT_CONTENT_RULES,
+    "accepted": FRONTMATTER_RULES + ["frontmatter.accepted"] + ACCEPTED_CONTENT_RULES,
+    # done and superseded come after accepted. Their own fields belong to the
+    # skills that set them, so only the rules this skill owns for accepted
+    # content are checked; unknown frontmatter fields are ignored.
+    "done": FRONTMATTER_RULES + ["frontmatter.accepted"] + ACCEPTED_CONTENT_RULES,
+    "superseded": FRONTMATTER_RULES + ["frontmatter.accepted"] + ACCEPTED_CONTENT_RULES,
+}
+
+# Rules that only the user's yes can satisfy, skipped by `--as`.
+ACCEPTANCE_RECORD_RULES = {"frontmatter.accepted", "frontmatter.unaccepted"}
+
+# ---------------------------------------------------------------------------
+# Format constants, from the templates.
+# ---------------------------------------------------------------------------
+
+STATUSES = ("idea", "draft", "accepted", "done", "superseded")
+FIELDS = ("id", "title", "status", "created", "updated", "accepted_by", "accepted_on")
+REQUIRED_VALUES = ("id", "title", "status", "created", "updated")
+DATE_FIELDS = ("created", "updated", "accepted_on")
+IDEA_SECTIONS = ("Goal", "Context", "Open Questions")
+SPEC_SECTIONS = (
+    "Goal & Non-Goals",
+    "Environment & Commands",
+    "Interfaces & Data Contracts",
+    "Behavior & Edge Cases",
+    "Boundaries & Decision Log",
+    "Verification Gate",
+)
+GOAL, BEHAVIOR, BOUNDARIES = SPEC_SECTIONS[0], SPEC_SECTIONS[3], SPEC_SECTIONS[4]
+GUARD_LABELS = {GOAL: ("Non-goals",), BOUNDARIES: ("Always", "Ask First", "Never", "Decision Log")}
+LIST_LABELS = ("Non-goals", "Always", "Ask First", "Never")
+DECISION_LINES = ("why", "rejected", "source")
+
+SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+FM_LINE_RE = re.compile(r"([a-z][a-z0-9_]*):(?:[ \t]+(.*))?")
+FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+H2_RE = re.compile(r"^##(?!#)\s+(.*?)\s*#*\s*$")
+ANY_HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
+ITEM_RE = re.compile(r"^- ")
+AC_RE = re.compile(r"^- \*\*AC-(\d+):\*\*\s+(.*)$")
+AC_LIKE_RE = re.compile(r"^-\s.*\bAC-\d+")
+D_RE = re.compile(r"^- \*\*D-(\d+):\*\*\s+(.*)$")
+AC_ID_RE = re.compile(r"\bAC-(\d+)\b")
+TBD_RE = re.compile(r"\bTBD\b")
+QUESTION_RE = re.compile(r"\?(?=\s|$|[|*)\]\"'_])")
+INLINE_CODE_RE = re.compile(r"(`+)(.+?)\1")
+
+Problem = namedtuple("Problem", "severity line section rule message fix")
+Line = namedtuple("Line", "no text code")
+
+
+class Section(object):
+    def __init__(self, title, line):
+        self.title = title
+        self.line = line
+        self.lines = []  # Line tuples, excluding the heading
+
+    def text_lines(self):
+        """Non-blank lines outside code fences."""
+        return [ln for ln in self.lines if not ln.code and ln.text.strip()]
+
+
+class Item(object):
+    """A top-level `- ` list item and its indented continuation lines."""
+
+    def __init__(self, line):
+        self.line = line
+        self.children = []
+
+
+class ParseError(Exception):
+    def __init__(self, line, message, where="frontmatter"):
+        Exception.__init__(self, message)
+        self.line = line
+        self.message = message
+        self.where = where
+
+
+class UsageError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+def parse_scalar(raw, lineno):
+    """Parse one frontmatter value: plain, "double-quoted" or 'single-quoted'.
+
+    Only flat `key: value` scalars are accepted. Anything else YAML could mean
+    (lists, maps, anchors, block scalars) is a parse error.
+    """
+    value = raw.strip()
+    if value.startswith('"'):
+        m = re.match(r'"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$', value)
+        if not m:
+            raise ParseError(lineno, "unterminated or malformed double-quoted value")
+        return re.sub(r"\\(.)", r"\1", m.group(1))
+    if value.startswith("'"):
+        m = re.match(r"'((?:[^']|'')*)'\s*(?:#.*)?$", value)
+        if not m:
+            raise ParseError(lineno, "unterminated or malformed single-quoted value")
+        return m.group(1).replace("''", "'")
+    if value.startswith("#"):
+        return ""
+    value = re.split(r"\s+#", value, 1)[0].strip()
+    if value and value[0] in "[]{}&*!|>%@`-,?":
+        raise ParseError(
+            lineno,
+            "unsupported value %r: only plain or quoted single-line values are allowed; quote it" % value,
+        )
+    if ": " in value or value.endswith(":"):
+        raise ParseError(lineno, "value %r contains ': '; put it in quotes" % value)
+    return value
+
+
+def parse_frontmatter(lines):
+    """Return (fields, field_lines, index_of_first_body_line)."""
+    if not lines or lines[0].rstrip() != "---":
+        raise ParseError(1, "the file must start with a '---' frontmatter line")
+    fields, field_lines = {}, {}
+    for i in range(1, len(lines)):
+        lineno, raw = i + 1, lines[i].rstrip("\n").rstrip("\r")
+        if raw.rstrip() == "---":
+            return fields, field_lines, i + 1
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        m = FM_LINE_RE.fullmatch(raw.rstrip())
+        if not m:
+            raise ParseError(lineno, "malformed frontmatter line %r; expected a flat 'key: value'" % raw)
+        key = m.group(1)
+        if key in fields:
+            raise ParseError(lineno, "duplicate frontmatter key %r (first on line %d)" % (key, field_lines[key]))
+        fields[key] = parse_scalar(m.group(2) or "", lineno)
+        field_lines[key] = lineno
+    raise ParseError(1, "the frontmatter is never closed by a '---' line")
+
+
+def split_sections(lines, first):
+    """Split the body into `##` sections, tracking code fences."""
+    preamble = Section("(before the first heading)", first + 1)
+    sections, current, fence, fence_line = [], preamble, None, 0
+    for i in range(first, len(lines)):
+        lineno, text = i + 1, lines[i].rstrip("\n").rstrip("\r")
+        m = FENCE_RE.match(text)
+        if fence:
+            current.lines.append(Line(lineno, text, True))
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            continue
+        if m:
+            fence, fence_line = m.group(1), lineno
+            current.lines.append(Line(lineno, text, True))
+            continue
+        h = H2_RE.match(text)
+        if h:
+            current = Section(h.group(1), lineno)
+            sections.append(current)
+            continue
+        current.lines.append(Line(lineno, text, False))
+    if fence:
+        raise ParseError(fence_line, "code fence opened here is never closed", "body")
+    return preamble, sections
+
+
+def items(lines):
+    """Group lines into top-level `- ` items; return (items, other_lines).
+
+    Indented lines continue the item above. Blank lines don't end an item.
+    Other non-blank, non-indented lines are returned in other_lines.
+    """
+    result, other, current = [], [], None
+    for ln in lines:
+        if not ln.text.strip():
+            continue
+        if ln.code or ln.text[0] in " \t":
+            if current:
+                current.children.append(ln)
+            elif not ln.code:
+                other.append(ln)
+            continue
+        if ITEM_RE.match(ln.text):
+            current = Item(ln)
+            result.append(current)
+        else:
+            current = None
+            other.append(ln)
+    return result, other
+
+
+def strip_code(text):
+    return INLINE_CODE_RE.sub("", text)
+
+
+def child_value(item, label):
+    """Return the (line, value) of an item's indented `label:` line, or None."""
+    for ln in item.children:
+        m = re.match(r"^\s+%s:\s*(.*)$" % re.escape(label), ln.text)
+        if m and not ln.code:
+            return ln, m.group(1).strip()
+    return None
+
+
+def table_cells(text):
+    cells = re.split(r"(?<!\\)\|", text.strip())
+    if cells and cells[0].strip() == "":
+        cells = cells[1:]
+    if cells and cells[-1].strip() == "":
+        cells = cells[:-1]
+    return [c.strip() for c in cells]
+
+
+def is_separator(cells):
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", c) for c in cells)
+
+
+class Spec(object):
+    def __init__(self, path, text):
+        self.path = path
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        self.lines = text.split("\n")
+        if self.lines and self.lines[-1] == "":
+            self.lines.pop()
+        self.fields, self.field_lines, first = parse_frontmatter(self.lines)
+        self.preamble, self.sections = split_sections(self.lines, first)
+        self.by_title = {}
+        for s in self.sections:
+            self.by_title.setdefault(s.title, s)
+        self.status = self.fields.get("status", "")
+        self._behavior = None
+
+    def section(self, title):
+        return self.by_title.get(title)
+
+    def all_lines(self):
+        for ln in self.preamble.lines:
+            yield None, ln
+        for s in self.sections:
+            yield s, Line(s.line, "## " + s.title, False)
+            for ln in s.lines:
+                yield s, ln
+
+    def behavior(self):
+        """Parse Behavior & Edge Cases into ACs, tables and stray lines."""
+        if self._behavior is None:
+            sec = self.section(BEHAVIOR)
+            acs, tables, stray, malformed = [], [], [], []
+            if sec:
+                all_items, other = items(sec.lines)
+                for it in all_items:
+                    m = AC_RE.match(it.line.text)
+                    if m:
+                        acs.append((int(m.group(1)), it))
+                    elif AC_LIKE_RE.match(it.line.text):
+                        malformed.append(it.line)
+                    else:
+                        stray.append(it.line)
+                table = None
+                for ln in other:
+                    if ln.text.startswith("|"):
+                        if table is None or table[-1].no != ln.no - 1:
+                            table = []
+                            tables.append(table)
+                        table.append(ln)
+                        continue
+                    table = None
+                    if ln.text.startswith("Not applicable:") or ln.text.startswith("TBD"):
+                        continue
+                    stray.append(ln)
+            self._behavior = (sec, acs, tables, stray, malformed)
+        return self._behavior
+
+
+# ---------------------------------------------------------------------------
+# Rules. Each takes a Spec and yields (line, section, message, fix).
+# ---------------------------------------------------------------------------
+
+RULES = {}
+
+
+def rule(rule_id):
+    def register(fn):
+        RULES[rule_id] = fn
+        return fn
+    return register
+
+
+def fm_line(spec, key):
+    return spec.field_lines.get(key, 1)
+
+
+@rule("frontmatter.fields")
+def check_fields(spec):
+    for key in FIELDS:
+        if key not in spec.fields:
+            yield 1, "frontmatter", "missing field %r" % key, "add a '%s:' line to the frontmatter, as in the template" % key
+        elif key in REQUIRED_VALUES and not spec.fields[key]:
+            yield fm_line(spec, key), "frontmatter", "%r is empty" % key, "give %s a value" % key
+
+
+@rule("frontmatter.id")
+def check_id(spec):
+    name = os.path.basename(spec.path)
+    stem, ext = os.path.splitext(name)
+    sid = spec.fields.get("id", "")
+    if ext != ".md":
+        yield 1, "frontmatter", "file name %r doesn't end in .md" % name, "rename the file to <id>.md"
+    if sid and not SLUG_RE.fullmatch(sid):
+        yield fm_line(spec, "id"), "frontmatter", "id %r is not a lowercase, hyphenated slug" % sid, \
+            "use only a-z, 0-9 and single hyphens, and rename the file to match"
+    if sid and sid != stem:
+        yield fm_line(spec, "id"), "frontmatter", "id %r doesn't equal the file name %r" % (sid, name), \
+            "set id to %r or rename the file to %s.md" % (stem, sid)
+
+
+@rule("frontmatter.status")
+def check_status(spec):
+    status = spec.fields.get("status", "")
+    if status and status not in STATUSES:
+        yield fm_line(spec, "status"), "frontmatter", "status %r is not one of %s" % (status, " | ".join(STATUSES)), \
+            "set status to one of those"
+
+
+@rule("frontmatter.dates")
+def check_dates(spec):
+    for key in DATE_FIELDS:
+        value = spec.fields.get(key, "")
+        if not value:
+            continue
+        ok = bool(DATE_RE.fullmatch(value))
+        if ok:
+            try:
+                datetime.date(int(value[:4]), int(value[5:7]), int(value[8:]))
+            except ValueError:
+                ok = False
+        if not ok:
+            yield fm_line(spec, key), "frontmatter", "%s %r is not a real YYYY-MM-DD date" % (key, value), \
+                "write %s as YYYY-MM-DD" % key
+
+
+@rule("frontmatter.unaccepted")
+def check_unaccepted(spec):
+    for key in ("accepted_by", "accepted_on"):
+        if spec.fields.get(key):
+            yield fm_line(spec, key), "frontmatter", "%s is set but status is %r" % (key, spec.status), \
+                "leave %s empty until the user accepts the spec" % key
+
+
+@rule("frontmatter.accepted")
+def check_accepted(spec):
+    for key in ("accepted_by", "accepted_on"):
+        if not spec.fields.get(key):
+            yield fm_line(spec, key), "frontmatter", "%s is empty but status is %r" % (key, spec.status), \
+                "only after the user's explicit yes, set %s; otherwise set status back to draft" % key
+
+
+@rule("idea.sections")
+def check_idea_sections(spec):
+    for title in IDEA_SECTIONS:
+        sec = spec.section(title)
+        if sec is None:
+            yield 1, title, "missing '## %s' heading" % title, "add the section from template-idea.md"
+        elif not sec.text_lines():
+            yield sec.line, title, "section is empty", "write the %s" % title.lower()
+
+
+ABBREVIATIONS_RE = re.compile(r"\b(?:e\.g|i\.e|etc|vs|cf|approx)\.", re.I)
+
+
+@rule("idea.goal-length")
+def check_goal_length(spec):
+    sec = spec.section("Goal")
+    if not sec or not sec.text_lines():
+        return
+    text = " ".join(strip_code(ln.text) for ln in sec.text_lines())
+    text = ABBREVIATIONS_RE.sub("", text)
+    count = max(1, len(re.findall(r"[.!?]+(?=\s|$)", text)))
+    if count > 3:
+        yield sec.line, "Goal", "Goal has %d sentences; at most 3 are allowed" % count, \
+            "cut the Goal to 1-3 sentences and move the rest to Context"
+
+
+@rule("spec.sections")
+def check_spec_sections(spec):
+    found = [s.title for s in spec.sections]
+    for s in spec.sections:
+        if s.title not in SPEC_SECTIONS:
+            yield s.line, s.title, "unexpected heading '## %s'" % s.title, \
+                "use only the six template headings; move this content into the section it informs"
+        elif spec.by_title[s.title] is not s:
+            yield s.line, s.title, "'## %s' appears more than once" % s.title, "merge the two sections"
+    for title in SPEC_SECTIONS:
+        if title not in found:
+            yield 1, title, "missing '## %s' heading" % title, "add the section from template-spec.md, in template order"
+    present = [t for t in found if t in SPEC_SECTIONS]
+    expected = [t for t in SPEC_SECTIONS if t in present]
+    if len(set(present)) == len(present) and present != expected:
+        first = next(i for i, (a, b) in enumerate(zip(present, expected)) if a != b)
+        sec = spec.by_title[present[first]]
+        yield sec.line, sec.title, "sections are out of order", "order the headings as in template-spec.md: " + ", ".join(SPEC_SECTIONS)
+
+
+@rule("spec.filled")
+def check_filled(spec):
+    for title in SPEC_SECTIONS:
+        sec = spec.section(title)
+        if sec is not None and not sec.text_lines():
+            yield sec.line, title, "section is empty", "fill in the %s section" % title
+
+
+@rule("ac.only")
+def check_ac_only(spec):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    for ln in stray:
+        yield ln.no, BEHAVIOR, "free prose about behavior, outside an AC", \
+            "rewrite it as an AC ('- **AC-n:** Given ..., when ..., then ....') or move it to the section it belongs in"
+
+
+@rule("ac.format")
+def check_ac_format(spec):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    for ln in malformed:
+        yield ln.no, BEHAVIOR, "looks like an AC but isn't in the AC format", \
+            "write it as '- **AC-n:** Given ..., when ..., then ....'"
+    seen = {}
+    for n, it in acs:
+        if n in seen:
+            yield it.line.no, BEHAVIOR, "AC-%d is used twice (first on line %d)" % (n, seen[n]), \
+                "give the new AC the next unused ID; never reuse one"
+        else:
+            seen[n] = it.line.no
+        text = " ".join([it.line.text] + [c.text for c in it.children
+                                          if not re.match(r"^\s+(verify|TBD)\b", c.text)]).lower()
+        missing = [w for w in ("given", "when", "then") if not re.search(r"\b%s\b" % w, text)]
+        if missing:
+            yield it.line.no, BEHAVIOR, "AC-%d has no %s" % (n, "/".join(missing)), \
+                "write AC-%d as one Given/When/Then sentence" % n
+
+
+def ac_checks(spec, allow_tbd):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    for n, it in acs:
+        verify = child_value(it, "verify")
+        tbd = any(re.match(r"^\s+TBD[:.]", c.text) for c in it.children if not c.code)
+        if verify and not verify[1]:
+            yield verify[0].no, BEHAVIOR, "AC-%d has an empty verify: line" % n, \
+                "name the exact command or test that checks AC-%d, in backticks" % n
+        elif not verify and not (allow_tbd and tbd):
+            what = "verify: line or TBD: line" if allow_tbd else "verify: line"
+            fix = "add an indented 'verify: `<command>`' line under AC-%d" % n
+            if allow_tbd:
+                fix += ", or a 'TBD:' line saying what is unknown"
+            yield it.line.no, BEHAVIOR, "AC-%d has no %s" % (n, what), fix
+
+
+@rule("ac.verify-or-tbd")
+def check_ac_verify_or_tbd(spec):
+    return ac_checks(spec, allow_tbd=True)
+
+
+@rule("ac.verify")
+def check_ac_verify(spec):
+    return ac_checks(spec, allow_tbd=False)
+
+
+@rule("edge.table")
+def check_edge_table(spec):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    if sec is None:
+        return
+    if not tables:
+        yield sec.line, BEHAVIOR, "no edge-case table", \
+            "add the '| Input or condition | Expected behavior | AC |' table after the ACs"
+    for table in tables:
+        header = table_cells(table[0].text)
+        if not header or header[-1] != "AC":
+            yield table[0].no, BEHAVIOR, "table's last column isn't 'AC'", \
+                "use the header '| Input or condition | Expected behavior | AC |'"
+        if len(table) < 2 or not is_separator(table_cells(table[1].text)):
+            yield table[0].no, BEHAVIOR, "table has no '|---|' separator row under its header", \
+                "add '|---|---|---|' under the header"
+
+
+@rule("edge.ac")
+def check_edge_ac(spec):
+    sec, acs, tables, stray, malformed = spec.behavior()
+    ids = set(n for n, _ in acs)
+    for table in tables:
+        for ln in table[2:] if len(table) > 1 and is_separator(table_cells(table[1].text)) else table[1:]:
+            cells = table_cells(ln.text)
+            refs = [int(n) for n in AC_ID_RE.findall(cells[-1])] if cells else []
+            if not refs:
+                yield ln.no, BEHAVIOR, "edge-case row doesn't point to an AC", \
+                    "put the ID of the AC that covers this row in the AC column, adding an AC if none does"
+            for n in refs:
+                if n not in ids:
+                    yield ln.no, BEHAVIOR, "edge-case row points to AC-%d, which doesn't exist" % n, \
+                        "point the row to an existing AC, or add AC-%d" % n
+
+
+def labelled(spec, title):
+    """Return {label: (label_line, [Item])} for the label lines in a section."""
+    sec = spec.section(title)
+    found, current = {}, None
+    if sec is None:
+        return sec, found
+    labels = GUARD_LABELS[title]
+    chunk = []
+    for ln in sec.lines + [Line(None, "", False)]:
+        label = None
+        if not ln.code and ln.no is not None:
+            for lab in labels:
+                if ln.text.rstrip() == lab + ":":
+                    label = lab
+        if label or ln.no is None:
+            if current:
+                found[current] = (found[current][0], items(chunk)[0])
+            if label:
+                current, chunk = label, []
+                found.setdefault(label, (ln.no, []))
+            continue
+        if current:
+            chunk.append(ln)
+    return sec, found
+
+
+@rule("guard.labels")
+def check_guard_labels(spec):
+    for title, labels in GUARD_LABELS.items():
+        sec, found = labelled(spec, title)
+        if sec is None:
+            continue
+        for lab in labels:
+            if lab not in found:
+                yield sec.line, title, "no '%s:' list" % lab, \
+                    "add a '%s:' line followed by its list, as in guardrails.md" % lab
+
+
+@rule("guard.items")
+def check_guard_items(spec):
+    for title in (GOAL, BOUNDARIES):
+        sec, found = labelled(spec, title)
+        for lab in LIST_LABELS:
+            if lab in found and not found[lab][1]:
+                yield found[lab][0], title, "the '%s:' list has no items" % lab, \
+                    "add at least one item under '%s:'" % lab
+
+
+@rule("guard.decisions")
+def check_guard_decisions(spec):
+    sec, found = labelled(spec, BOUNDARIES)
+    if "Decision Log" not in found:
+        return
+    line, entries = found["Decision Log"]
+    if not entries:
+        yield line, BOUNDARIES, "the Decision Log has no entries", \
+            "add at least one '- **D-n:** <decision>.' entry from the interview or the repo"
+    for it in entries:
+        m = D_RE.match(it.line.text)
+        if not m:
+            yield it.line.no, BOUNDARIES, "Decision Log entry isn't in the '- **D-n:** <decision>.' format", \
+                "write it as '- **D-n:** <decision>.' with why:, rejected: and source: lines"
+            continue
+        for key in DECISION_LINES:
+            value = child_value(it, key)
+            if not value or not value[1]:
+                yield it.line.no, BOUNDARIES, "D-%s has no %s: line" % (m.group(1), key), \
+                    "add an indented '%s:' line under D-%s" % (key, m.group(1))
+
+
+def body_lines(spec):
+    for sec, ln in spec.all_lines():
+        if not ln.code:
+            yield sec, ln
+
+
+def section_name(sec):
+    return sec.title if sec else "(before the first heading)"
+
+
+@rule("no-tbd")
+def check_no_tbd(spec):
+    for sec, ln in body_lines(spec):
+        if TBD_RE.search(strip_code(ln.text)):
+            yield ln.no, section_name(sec), "TBD left in the spec", \
+                "resolve it with the user, or keep the spec at draft"
+
+
+@rule("no-open-questions")
+def check_no_open_questions(spec):
+    for sec, ln in body_lines(spec):
+        text = strip_code(ln.text)
+        h = ANY_HEADING_RE.match(text)
+        if h and h.group(1).strip().lower() == "open questions" or text.strip().lower() == "open questions:":
+            yield ln.no, section_name(sec), "an Open Questions list is left in the spec", \
+                "resolve each question into the section it affects, then remove the list"
+        elif QUESTION_RE.search(text) and not TBD_RE.search(text):
+            yield ln.no, section_name(sec), "open question left in the spec", \
+                "answer it with the user and write the answer into the spec, or keep the spec at draft"
+
+
+def count_words(sec):
+    n = 0
+    for ln in sec.lines:
+        text = ln.text
+        if FENCE_RE.match(text):
+            continue
+        if text.lstrip().startswith("|"):
+            cells = table_cells(text)
+            if is_separator(cells):
+                continue
+            text = " ".join(cells)
+        n += len(text.split())
+    return n
+
+
+@rule("budget")
+def check_budget(spec):
+    for sec in spec.sections:
+        budget = WORD_BUDGETS.get(sec.title)
+        if budget is None or spec.by_title[sec.title] is not sec:
+            continue
+        words = count_words(sec)
+        if words > budget:
+            yield sec.line, sec.title, "%d words, over the %d-word budget" % (words, budget), \
+                "cut %d words: link to files instead of describing them, and drop prose that types and tests cover" % (words - budget)
+
+
+assert set(RULES) == set(RULE_TEXT), "every rule needs RULE_TEXT and a function"
+
+
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+
+def check_spec(spec, as_status=None):
+    """Return (status_checked, [Problem])."""
+    problems = []
+    claimed = spec.status
+    status = as_status or claimed
+    rule_ids = list(STATUS_RULES.get(status, FRONTMATTER_RULES))
+    if as_status and as_status != claimed:
+        rule_ids = [r for r in rule_ids if r not in ACCEPTANCE_RECORD_RULES]
+    if status not in STATUS_RULES and "frontmatter.status" not in rule_ids:
+        rule_ids.append("frontmatter.status")
+    for rule_id in rule_ids:
+        severity = BUDGET_SEVERITY.get(status, "warning") if rule_id == "budget" else "error"
+        for line, section, message, fix in RULES[rule_id](spec):
+            problems.append(Problem(severity, line, section, rule_id, message, fix))
+    problems.sort(key=lambda p: (p.line, p.rule))
+    return status, problems
+
+
+def format_problem(path, p):
+    fix = p.fix[0].upper() + p.fix[1:]
+    return "%s:%d: %s [%s] %s: %s. Fix: %s." % (path, p.line, p.severity, p.rule, p.section, p.message, fix)
+
+
+USAGE = "usage: check [--as idea|draft|accepted] <spec.md> [<spec.md> ...] | check --rules"
+
+
+def print_rules():
+    for status in STATUSES:
+        print("%s:" % status)
+        for rule_id in STATUS_RULES[status]:
+            severity = BUDGET_SEVERITY[status] if rule_id == "budget" else "error"
+            print("  %-24s %-7s %s" % (rule_id, severity, RULE_TEXT[rule_id]))
+
+
+def parse_args(argv):
+    as_status, paths, i = None, [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            return "help", None
+        if arg == "--rules":
+            return "rules", None
+        if arg == "--as" or arg.startswith("--as="):
+            if arg == "--as":
+                i += 1
+                if i >= len(argv):
+                    raise UsageError("--as needs a status")
+                value = argv[i]
+            else:
+                value = arg[len("--as="):]
+            if value not in ("idea", "draft", "accepted"):
+                raise UsageError("--as must be idea, draft or accepted, not %r" % value)
+            as_status = value
+        elif arg == "--":
+            paths.extend(argv[i + 1:])
+            break
+        elif arg.startswith("-") and arg != "-":
+            raise UsageError("unknown option %r" % arg)
+        else:
+            paths.append(arg)
+        i += 1
+    if not paths:
+        raise UsageError("no spec files given")
+    return as_status, paths
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        as_status, paths = parse_args(argv)
+    except UsageError as e:
+        sys.stderr.write("check: %s\n%s\n" % (e, USAGE))
+        return 2
+    if as_status == "help":
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    if as_status == "rules":
+        print_rules()
+        return 0
+    worst = 0
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            print("%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a spec .md file." % (path, e))
+            worst = 2
+            continue
+        try:
+            spec = Spec(path, text)
+        except ParseError as e:
+            print("%s:%d: error [parse] %s: %s. Fix: Correct the file so it parses." % (path, e.line, e.where, e.message))
+            worst = 2
+            continue
+        status, problems = check_spec(spec, as_status)
+        for p in problems:
+            print(format_problem(path, p))
+        errors = sum(1 for p in problems if p.severity == "error")
+        warnings = len(problems) - errors
+        if errors:
+            worst = max(worst, 1)
+        else:
+            label = status if not as_status or as_status == spec.status else "%s, checked as %s" % (spec.status, status)
+            print("%s: ok (%s)%s" % (path, label, ", %d warning%s" % (warnings, "" if warnings == 1 else "s") if warnings else ""))
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main())
