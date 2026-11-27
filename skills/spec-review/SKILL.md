@@ -1,26 +1,25 @@
 ---
 name: spec-review
-description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to validate a reviewer's findings JSON.
+description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling) or validate a reviewer's findings JSON.
 ---
 
 # spec-review
 
-Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means every finding the review uses has passed the findings validator, and the user has the findings by severity.
+Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates have run and the user has every gate's result with its lines, and every finding the review uses has passed the findings validator.
 
-## Status (v0.1)
+## Status (v0.2)
 
-Only the findings format and its validator exist so far. The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
+Available: the hard gates (`gate`) and the findings format with its validator (`findings`). The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
 
 | Step | Planned in |
 |---|---|
-| Hard gates (`gate` script: spec checker, secret and PII scan, block parsing, traceability, length ceiling) | v0.2 |
 | Risk tiering and human sign-off | v0.3 |
 | The five reviewer agents (`spec-review-ambiguity`, `-architecture`, `-security`, `-blast-radius`, `-slicer`) | v0.4 |
 | Bounded revision loop | v0.5 |
 | Human-in-the-loop pauses and the review summary | v0.6 |
 | Graduating repeated findings (`findings --stats`) | v0.7 |
 
-When the user asks to review a spec, say plainly that the gates and reviewers aren't available yet, and don't run a review that imitates them. What you can do now is validate findings JSON that already exists, as below. Never report a spec as reviewed or ready to build.
+When the user asks to review a spec, run the hard gates below and report their results. Say plainly that risk tiering and the advisory reviewers aren't available yet, and don't run a review that imitates them. Passing the gates means only that: never report a spec as reviewed or ready to build.
 
 ## Core rules
 
@@ -34,6 +33,35 @@ Every release keeps these.
 6. **No spec bloat.** A revision may not push the spec past its length ceiling. Fixing a blocker by adding paragraphs is a smell, not a fix.
 7. **Humans own the why, agents own the how.** Two valid readings of business logic are a question for the user, never a guess.
 8. **Graduate repeated findings.** A structural mistake a reviewer keeps catching should become a deterministic rule.
+
+## Hard gates
+
+`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate [--repo ROOT] specs/<slug>.md` runs every gate and needs only `python3`. Every gate is deterministic: the same spec and settings always get the same result, so a gate failure is a fact, not an opinion.
+
+| Gate | Fails when |
+|---|---|
+| `check` | `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --as accepted` reports an error; its rules keep their names (`check.no-tbd`, …) |
+| `secrets` | The file holds a credential (private key, cloud or API token, JWT, password in a URL or assignment, a repo pattern) or personal data (email, SSN, card number, phone number); values are masked in the output |
+| `blocks` | A fenced `json`, `yaml`/`yml` or `openapi` block doesn't parse, an OpenAPI document lacks its required fields, or a block naming a local `"$schema"` file doesn't match it |
+| `trace` | The repo sets `ticket_pattern` and the spec names no matching ticket outside code |
+| `length` | The body is over the word ceiling (`max_words`, default 2000) |
+
+- It prints problems in the spec checker's format, `<file>:<line>: <error|warning> [<gate>.<rule>] <section>: <problem>. Fix: <what to do>.`, then `<file>: gates ok: …` or `<file>: gates failed: <gate> (<n>), …; passed: …`.
+- It exits 0 when every gate passes, 1 when any fails, and 2 for a usage error, an unreadable spec, a spec the checker can't parse, or an invalid settings file. Warnings (a YAML block outside the parsed subset, a remote `$schema`) never fail a gate; tell the user those blocks weren't checked.
+- Show the user every failing line. A failure is fixed in the spec through `orca-kit:spec`, never by this skill; a `check.*` failure is the spec checker's rule. Re-run the gate after the spec changes.
+- `--gates` lists every rule. `--help` documents the settings file and the YAML subset it parses.
+- If `python3` isn't available, say the gates didn't run; never pass a spec on a by-hand reading.
+
+Repo settings are optional, in `<repo>/.orca-kit/spec-review.yml` (the repo is the nearest directory above the spec with `.orca-kit/` or `.git`, or `--repo`):
+
+```yaml
+ticket_pattern: '\b[A-Z][A-Z0-9]+-[0-9]+\b'  # set = every spec must name a ticket
+max_words: 2000                             # length ceiling
+secret_patterns:                            # extra secret regexes
+  - 'acme_[a-z0-9]{32}'
+```
+
+Patterns are Python regexes; quote them in single quotes. Any other key, or a value of the wrong type, is an error.
 
 ## Findings
 
@@ -84,6 +112,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 
 ## Bundled files
 
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate`: the hard gates.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings`: the findings validator.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings.schema.json`: the findings format as JSON Schema; the validator implements the same rules by hand, and its tests check the two agree.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the validator's tests and fixtures; run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validator's tests and fixtures (`gate-*` fixtures are specs); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.

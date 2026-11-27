@@ -1,0 +1,1151 @@
+#!/usr/bin/env python3
+"""Run the orca-kit:spec-review hard gates on a spec.
+
+Usage:
+  gate [--repo ROOT] <spec.md> [<spec.md> ...]
+  gate --gates
+
+  --repo ROOT   The repo the spec belongs to: where .orca-kit/spec-review.yml
+                is read from and where a block's local "$schema" path is
+                resolved. Defaults to the nearest directory at or above the
+                spec that contains .orca-kit/ or .git.
+  --gates       List the gates and their rules, and exit.
+
+Gates, in order (docs/spec-review/ROADMAP.md, v0.2):
+  check     skills/spec/check --as accepted, run as a subprocess.
+  secrets   No credentials or personal data anywhere in the file.
+  blocks    Every fenced json / yaml / openapi block parses; OpenAPI
+            documents have their required fields, and a block naming a
+            local "$schema" file validates against it.
+  trace     The spec names a ticket, when the repo config sets ticket_pattern.
+  length    The spec body is within the word ceiling (max_words).
+
+Prints one line per problem, in the spec checker's format:
+  <file>:<line>: <error|warning> [<gate>.<rule>] <section>: <problem>. Fix: <what to do>.
+then one result line per file:
+  <file>: gates ok: check, secrets, blocks, trace, length
+  <file>: gates failed: <gate> (<n>), ...; passed: <gate>, ...
+
+Every gate is deterministic: the same spec and config always give the same
+output. Warnings never fail a gate.
+
+Exit codes: 0 every gate passes, 1 a gate fails, 2 a usage error, an
+unreadable spec, a spec the checker can't parse, or an invalid config.
+
+Repo settings, all optional, in <repo>/.orca-kit/spec-review.yml:
+  ticket_pattern: '[A-Z][A-Z0-9]+-[0-9]+'   # Python regex; set = traceability required
+  max_words: 2000                           # length ceiling, words in the body
+  secret_patterns:                          # extra secret regexes (Python)
+    - 'acme_[a-z0-9]{32}'
+The file is YAML in the subset described at parse_yaml below; any other key,
+or a value of the wrong type, is a config error (exit 2).
+
+Python 3 standard library only; no install step.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from collections import namedtuple
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+CHECK = os.path.join(HERE, "..", "spec", "check")
+CONFIG_PATH = os.path.join(".orca-kit", "spec-review.yml")
+
+GATES = ("check", "secrets", "blocks", "trace", "length")
+
+DEFAULTS = {"ticket_pattern": None, "max_words": 2000, "secret_patterns": []}
+
+RULE_TEXT = {
+    "check.<rule>": "every rule of `skills/spec/check --as accepted` (see `check --rules`), under its own name",
+    "check.run": "the spec checker runs and reports in its own format",
+    "secrets.private-key": "no PEM private key blocks",
+    "secrets.aws-key": "no AWS access key IDs (AKIA..., ASIA...)",
+    "secrets.github-token": "no GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_)",
+    "secrets.slack-token": "no Slack tokens (xoxb-, xoxp-, ...)",
+    "secrets.stripe-key": "no live Stripe keys (sk_live_, rk_live_)",
+    "secrets.google-key": "no Google API keys (AIza...)",
+    "secrets.api-key": "no sk-... API keys",
+    "secrets.jwt": "no JSON Web Tokens",
+    "secrets.url-credentials": "no user:password@ in URLs, unless the password is a placeholder",
+    "secrets.assignment": "no password/secret/token/api_key = <value with letters and digits>, unless a placeholder",
+    "secrets.custom": "none of the repo's secret_patterns",
+    "pii.email": "no email addresses, except reserved example domains",
+    "pii.ssn": "no US social security numbers",
+    "pii.card": "no payment card numbers (Luhn-valid), except well-known test cards",
+    "pii.phone": "no international (+...) phone numbers",
+    "blocks.json": "every ```json block is JSON, with no duplicate keys",
+    "blocks.yaml": "every ```yaml / ```yml block parses, with no duplicate keys",
+    "blocks.yaml-unsupported": "warning: a YAML block uses a feature the gate's YAML subset doesn't parse, so it isn't checked",
+    "blocks.openapi": "an OpenAPI document (```openapi, or a top-level openapi/swagger key) has its required fields",
+    "blocks.schema": "a block naming a local \"$schema\" file validates against it",
+    "blocks.schema-unsupported": "warning: a schema uses keywords or a $schema the gate doesn't check",
+    "trace.ticket": "with ticket_pattern set, the spec names a ticket matching it, outside code",
+    "length.words": "the body has at most max_words words",
+}
+
+Problem = namedtuple("Problem", "severity line section rule message fix")
+
+
+class UsageError(Exception):
+    pass
+
+
+class ConfigError(Exception):
+    def __init__(self, message, line=1):
+        Exception.__init__(self, message)
+        self.message = message
+        self.line = line
+
+
+# ---------------------------------------------------------------------------
+# The spec's lines and sections, enough to name where a problem is. The
+# checker owns the format; this only tracks frontmatter, `##` headings and
+# code fences, the same way it does.
+# ---------------------------------------------------------------------------
+
+FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
+H2_RE = re.compile(r"^##(?!#)\s+(.*?)\s*#*\s*$")
+
+Block = namedtuple("Block", "info start lines")  # start: line no. of the opening fence
+
+
+class Doc(object):
+    def __init__(self, text):
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        self.lines = text.split("\n")
+        if self.lines and self.lines[-1] == "":
+            self.lines.pop()
+        self.lines = [ln.rstrip("\r") for ln in self.lines]
+        self.section_of = []  # per line, 0-based
+        self.in_code = []
+        self.blocks = []
+        self.body_start = 0  # 0-based index of the first body line
+        if self.lines and self.lines[0].rstrip() == "---":
+            for i in range(1, len(self.lines)):
+                if self.lines[i].rstrip() == "---":
+                    self.body_start = i + 1
+                    break
+        section = "frontmatter" if self.body_start else "(before the first heading)"
+        fence = None
+        for i, line in enumerate(self.lines):
+            if i == self.body_start and self.body_start:
+                section = "(before the first heading)"
+            if i < self.body_start:
+                self.section_of.append("frontmatter")
+                self.in_code.append(False)
+                continue
+            m = FENCE_RE.match(line)
+            if fence:
+                if m and m.group(2)[0] == fence[1][0] and len(m.group(2)) >= len(fence[1]) and not m.group(3).strip():
+                    self.blocks.append(Block(fence[2], fence[0] + 1, fence[3]))
+                    fence = None
+                else:
+                    indent = len(fence[4])
+                    stripped = len(line) - len(line.lstrip(" "))
+                    fence[3].append(line[min(indent, stripped):])
+                self.section_of.append(section)
+                self.in_code.append(True)
+                continue
+            if m:
+                info = m.group(3).strip().split()
+                fence = (i, m.group(2), info[0].lower() if info else "", [], m.group(1))
+                self.section_of.append(section)
+                self.in_code.append(True)
+                continue
+            h = H2_RE.match(line)
+            if h:
+                section = h.group(1)
+            self.section_of.append(section)
+            self.in_code.append(False)
+
+    def section(self, lineno):
+        if 1 <= lineno <= len(self.section_of):
+            return self.section_of[lineno - 1]
+        return "file"
+
+
+# ---------------------------------------------------------------------------
+# A strict YAML subset, shared by fenced yaml blocks and the repo config.
+#
+# Parsed: block mappings and block sequences (including `- key: value`
+# items), plain, 'single-quoted' and "double-quoted" single-line scalars,
+# single-line flow collections ([a, b], {a: 1}), | and > block scalars, and
+# `#` comments. Plain scalars resolve as YAML 1.2 core: null, true/false,
+# integers, floats, otherwise strings. Duplicate keys are an error.
+#
+# Not parsed, and reported as unsupported rather than guessed at: anchors,
+# aliases, tags, merge keys, directives, several documents, `?` keys, and
+# plain or quoted scalars continued on the next line.
+# ---------------------------------------------------------------------------
+
+class YamlError(Exception):
+    def __init__(self, line, message):
+        Exception.__init__(self, message)
+        self.line = line
+        self.message = message
+
+
+class YamlUnsupported(YamlError):
+    pass
+
+
+INT_RE = re.compile(r"^[-+]?(0|[1-9][0-9]*)$|^0o[0-7]+$|^0x[0-9a-fA-F]+$")
+FLOAT_RE = re.compile(r"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$|^[-+]?\.(inf|Inf|INF)$|^\.(nan|NaN|NAN)$")
+ESCAPES = {"0": "\0", "a": "\a", "b": "\b", "t": "\t", "\t": "\t", "n": "\n", "v": "\v", "f": "\f",
+           "r": "\r", "e": "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\x85", "_": "\xa0"}
+HEX_LEN = {"x": 2, "u": 4, "U": 8}
+
+
+def resolve_plain(text):
+    if text in ("", "~", "null", "Null", "NULL"):
+        return None
+    if text in ("true", "True", "TRUE"):
+        return True
+    if text in ("false", "False", "FALSE"):
+        return False
+    if INT_RE.match(text):
+        return int(text, 0) if text[:2] in ("0o", "0x") else int(text)
+    if FLOAT_RE.match(text):
+        return float(text.lower().replace(".inf", "inf").replace(".nan", "nan"))
+    return text
+
+
+def strip_comment(text):
+    """text without a trailing ` # comment` outside quotes."""
+    quote = None
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if quote == "'":
+            if c == "'":
+                if i + 1 < len(text) and text[i + 1] == "'":
+                    i += 1
+                else:
+                    quote = None
+        elif quote == '"':
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                quote = None
+        elif c in "'\"" and (i == 0 or text[i - 1] in " \t[{,:-?"):
+            quote = c
+        elif c == "#" and (i == 0 or text[i - 1] in " \t"):
+            return text[:i].rstrip()
+        i += 1
+    return text.rstrip()
+
+
+class ScalarReader(object):
+    """Reads one inline value (scalar or flow collection) from a string."""
+
+    def __init__(self, text, line):
+        self.text = text
+        self.i = 0
+        self.line = line
+
+    def fail(self, message):
+        raise YamlError(self.line, message)
+
+    def ws(self):
+        while self.i < len(self.text) and self.text[self.i] in " \t":
+            self.i += 1
+
+    def value(self, flow):
+        self.ws()
+        if self.i >= len(self.text):
+            return None
+        c = self.text[self.i]
+        if c in "&*!":
+            raise YamlUnsupported(self.line, "anchors, aliases and tags aren't in the YAML subset")
+        if c == "[":
+            return self.seq()
+        if c == "{":
+            return self.map()
+        if c == '"':
+            return self.double()
+        if c == "'":
+            return self.single()
+        if c in "|>" and not flow:
+            self.fail("a block scalar indicator must end the line")
+        if c in "@`":
+            self.fail("a plain value can't start with %r; quote it" % c)
+        if c in "]}," and flow:
+            self.fail("unexpected %r" % c)
+        return self.plain(flow)
+
+    def plain(self, flow):
+        start = self.i
+        stops = ",[]{}" if flow else ""
+        while self.i < len(self.text):
+            c = self.text[self.i]
+            if c in stops:
+                break
+            if c == ":" and (self.i + 1 == len(self.text) or self.text[self.i + 1] in " \t" + stops):
+                if flow:
+                    break
+                self.fail("a value can't contain ': '; quote it")
+            self.i += 1
+        return resolve_plain(self.text[start:self.i].strip())
+
+    def single(self):
+        self.i += 1
+        out = []
+        while True:
+            j = self.text.find("'", self.i)
+            if j < 0:
+                raise YamlUnsupported(self.line, "a quoted value continued on the next line isn't in the YAML subset (or the quote is never closed)")
+            out.append(self.text[self.i:j])
+            if self.text[j + 1:j + 2] == "'":
+                out.append("'")
+                self.i = j + 2
+                continue
+            self.i = j + 1
+            return "".join(out)
+
+    def double(self):
+        self.i += 1
+        out = []
+        while self.i < len(self.text):
+            c = self.text[self.i]
+            if c == '"':
+                self.i += 1
+                return "".join(out)
+            if c == "\\":
+                e = self.text[self.i + 1:self.i + 2]
+                if e in ESCAPES:
+                    out.append(ESCAPES[e])
+                    self.i += 2
+                    continue
+                if e in HEX_LEN:
+                    digits = self.text[self.i + 2:self.i + 2 + HEX_LEN[e]]
+                    if len(digits) == HEX_LEN[e] and re.match(r"^[0-9a-fA-F]+$", digits):
+                        out.append(chr(int(digits, 16)))
+                        self.i += 2 + HEX_LEN[e]
+                        continue
+                self.fail("invalid escape '\\%s' in a double-quoted value" % e)
+            out.append(c)
+            self.i += 1
+        raise YamlUnsupported(self.line, "a quoted value continued on the next line isn't in the YAML subset (or the quote is never closed)")
+
+    def seq(self):
+        self.i += 1
+        out = []
+        while True:
+            self.ws()
+            if self.i >= len(self.text):
+                raise YamlUnsupported(self.line, "a flow sequence continued on the next line isn't in the YAML subset (or the '[' is never closed)")
+            if self.text[self.i] == "]":
+                self.i += 1
+                return out
+            out.append(self.value(True))
+            self.ws()
+            self.open_at_end("flow sequence", "[")
+            if self.text[self.i:self.i + 1] == ",":
+                self.i += 1
+            elif self.text[self.i:self.i + 1] != "]":
+                self.fail("expected ',' or ']' in a flow sequence")
+
+    def map(self):
+        self.i += 1
+        out = {}
+        while True:
+            self.ws()
+            if self.i >= len(self.text):
+                raise YamlUnsupported(self.line, "a flow mapping continued on the next line isn't in the YAML subset (or the '{' is never closed)")
+            if self.text[self.i] == "}":
+                self.i += 1
+                return out
+            key = self.value(True)
+            self.ws()
+            if self.text[self.i:self.i + 1] == ":":
+                self.i += 1
+                val = self.value(True)
+            else:
+                val = None
+            if not is_hashable(key):
+                self.fail("a mapping key must be a scalar")
+            if key in out:
+                self.fail("duplicate key %s" % json.dumps(key))
+            out[key] = val
+            self.ws()
+            self.open_at_end("flow mapping", "{")
+            if self.text[self.i:self.i + 1] == ",":
+                self.i += 1
+            elif self.text[self.i:self.i + 1] != "}":
+                self.fail("expected ',' or '}' in a flow mapping")
+
+    def open_at_end(self, what, bracket):
+        if self.i >= len(self.text):
+            raise YamlUnsupported(self.line, "a %s continued on the next line isn't in the YAML subset (or the '%s' is never closed)" % (what, bracket))
+
+    def done(self):
+        self.ws()
+        if self.i < len(self.text):
+            self.fail("unexpected text %r after the value" % self.text[self.i:])
+
+
+def is_hashable(value):
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def inline(text, line):
+    r = ScalarReader(text, line)
+    v = r.value(False)
+    r.done()
+    return v
+
+
+KEY_RE = re.compile(r"""^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#'"\[\]{},&*!|>%@`?-][^#]*?|-[^\s#][^#]*?)[ \t]*:(?:[ \t]+(.*))?$""")
+BLOCK_SCALAR_RE = re.compile(r"^([|>])([-+]?)([1-9]?)[-+]?$")
+
+
+def parse_yaml(text, first_line=1):
+    """Parse one YAML document in the subset above. Raises YamlError or YamlUnsupported."""
+    rows = []  # (line no., indent, content)
+    raw = text.split("\n")
+    for n, line in enumerate(raw):
+        no = first_line + n
+        if "\t" in line[:len(line) - len(line.lstrip(" \t"))]:
+            raise YamlError(no, "tab used for indentation")
+        content = line.strip()
+        if not content or content.startswith("#"):
+            rows.append((no, None, line))
+            continue
+        if line.startswith("%"):
+            raise YamlUnsupported(no, "directives aren't in the YAML subset")
+        if content in ("---", "...") or content.startswith("--- "):
+            if any(r[1] is not None for r in rows) or content != "---":
+                raise YamlUnsupported(no, "several documents, or content after '---', aren't in the YAML subset")
+            rows.append((no, None, line))
+            continue
+        rows.append((no, len(line) - len(line.lstrip(" ")), line))
+    p = _Parser(rows)
+    p.skip()
+    if p.i >= len(p.rows):
+        return None
+    value = p.node(p.rows[p.i][1])
+    p.skip()
+    if p.i < len(p.rows):
+        no, indent, _ = p.rows[p.i]
+        raise YamlError(no, "unexpected indentation")
+    return value
+
+
+class _Parser(object):
+    def __init__(self, rows):
+        self.rows = rows
+        self.i = 0
+
+    def skip(self):
+        while self.i < len(self.rows) and self.rows[self.i][1] is None:
+            self.i += 1
+
+    def node(self, indent):
+        self.skip()
+        no, ind, line = self.rows[self.i]
+        content = line.strip()
+        if ind != indent:
+            raise YamlError(no, "unexpected indentation")
+        if content == "-" or content.startswith("- "):
+            return self.sequence(indent)
+        if KEY_RE.match(strip_comment(content)):
+            return self.mapping(indent)
+        if content[:1] == "?":
+            raise YamlUnsupported(no, "'?' complex keys aren't in the YAML subset")
+        self.i += 1
+        value = inline(strip_comment(content), no)
+        self.no_continuation(indent - 1, no)
+        return value
+
+    def no_continuation(self, indent, no):
+        self.skip()
+        if self.i < len(self.rows) and self.rows[self.i][1] > indent:
+            raise YamlUnsupported(self.rows[self.i][0], "a value continued on the next line isn't in the YAML subset")
+
+    def block_scalar(self, indicator, parent_indent, no):
+        m = BLOCK_SCALAR_RE.match(indicator)
+        if not m:
+            raise YamlError(no, "malformed block scalar indicator %r" % indicator)
+        lines = []
+        self.i += 1
+        block_indent = None
+        while self.i < len(self.rows):
+            rno, ind, line = self.rows[self.i]
+            if ind is None:
+                if line.strip() and block_indent is not None and len(line) - len(line.lstrip(" ")) >= block_indent:
+                    lines.append(line[block_indent:])
+                else:
+                    lines.append("")
+                self.i += 1
+                continue
+            if ind <= parent_indent:
+                break
+            if block_indent is None:
+                block_indent = ind
+            if ind < block_indent:
+                raise YamlError(rno, "a block scalar line is less indented than the first")
+            lines.append(line[block_indent:])
+            self.i += 1
+        while lines and lines[-1] == "":
+            lines.pop()
+        joiner = "\n" if m.group(1) == "|" else " "
+        return joiner.join(lines) + ("" if m.group(2) == "-" or not lines else "\n")
+
+    def value_after(self, rest, indent, no, child_min):
+        """The value of `key:` or `-` whose inline remainder is rest."""
+        rest = strip_comment(rest or "")
+        if rest and rest[0] in "|>":
+            return self.block_scalar(rest, indent, no)
+        if rest:
+            self.i += 1
+            if rest[:1] in "&*!":
+                raise YamlUnsupported(no, "anchors, aliases and tags aren't in the YAML subset")
+            value = inline(rest, no)
+            self.no_continuation(indent, no)
+            return value
+        self.i += 1
+        self.skip()
+        if self.i < len(self.rows):
+            nno, nind, nline = self.rows[self.i]
+            nested_seq = nline.strip() == "-" or nline.strip().startswith("- ")
+            if nind > indent or (nind == indent and nested_seq and child_min == indent):
+                return self.node(nind)
+        return None
+
+    def mapping(self, indent):
+        out = {}
+        while True:
+            self.skip()
+            if self.i >= len(self.rows):
+                return out
+            no, ind, line = self.rows[self.i]
+            if ind < indent:
+                return out
+            if ind > indent:
+                raise YamlError(no, "unexpected indentation")
+            content = strip_comment(line.strip())
+            if content == "-" or content.startswith("- "):
+                raise YamlError(no, "a sequence item where a mapping key was expected")
+            m = KEY_RE.match(content)
+            if not m:
+                if content[:1] == "?":
+                    raise YamlUnsupported(no, "'?' complex keys aren't in the YAML subset")
+                raise YamlError(no, "expected 'key: value'")
+            key = inline(m.group(1), no)
+            if key == "<<":
+                raise YamlUnsupported(no, "merge keys aren't in the YAML subset")
+            if not is_hashable(key):
+                raise YamlError(no, "a mapping key must be a scalar")
+            if key in out:
+                raise YamlError(no, "duplicate key %s" % json.dumps(key))
+            out[key] = self.value_after(m.group(2), indent, no, indent)
+
+    def sequence(self, indent):
+        out = []
+        while True:
+            self.skip()
+            if self.i >= len(self.rows):
+                return out
+            no, ind, line = self.rows[self.i]
+            if ind < indent:
+                return out
+            content = line.strip()
+            if ind > indent:
+                raise YamlError(no, "unexpected indentation")
+            if not (content == "-" or content.startswith("- ")):
+                return out  # the next key of the mapping this sequence belongs to
+            rest = content[1:].lstrip(" ")
+            item_indent = ind + (len(content) - len(rest))
+            if rest and KEY_RE.match(strip_comment(rest)):
+                # `- key: value`: a mapping whose first key sits after the dash.
+                self.rows[self.i] = (no, item_indent, " " * item_indent + rest)
+                out.append(self.mapping(item_indent))
+                continue
+            if rest.startswith("- ") or rest == "-":
+                self.rows[self.i] = (no, item_indent, " " * item_indent + rest)
+                out.append(self.sequence(item_indent))
+                continue
+            out.append(self.value_after(rest, indent, no, None))
+
+
+# ---------------------------------------------------------------------------
+# Repo config
+# ---------------------------------------------------------------------------
+
+def find_repo(spec_path):
+    d = os.path.dirname(os.path.abspath(spec_path))
+    while True:
+        if os.path.exists(os.path.join(d, ".orca-kit")) or os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return os.path.dirname(os.path.abspath(spec_path))
+        d = parent
+
+
+def compile_pattern(value, where):
+    if not isinstance(value, str) or not value:
+        raise ConfigError("%s must be a non-empty quoted regex" % where)
+    try:
+        return re.compile(value)
+    except re.error as e:
+        raise ConfigError("%s %s isn't a valid regex (%s)" % (where, json.dumps(value), e))
+
+
+def load_config(repo):
+    """(config dict, path or None). Raises ConfigError."""
+    path = os.path.join(repo, CONFIG_PATH)
+    config = dict(DEFAULTS)
+    config["ticket_re"] = None
+    config["secret_res"] = []
+    if not os.path.isfile(path):
+        return config, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError("can't read it (%s)" % e)
+    try:
+        data = parse_yaml(text)
+    except YamlError as e:
+        raise ConfigError(e.message, e.line)
+    if data is None:
+        return config, path
+    if not isinstance(data, dict):
+        raise ConfigError("the top level must be a mapping of settings")
+    unknown = sorted(str(k) for k in data if k not in DEFAULTS)
+    if unknown:
+        raise ConfigError("unknown setting%s %s; the settings are %s" % (
+            "s" if len(unknown) > 1 else "", ", ".join(unknown), ", ".join(DEFAULTS)))
+    if data.get("ticket_pattern") is not None:
+        config["ticket_pattern"] = data["ticket_pattern"]
+        config["ticket_re"] = compile_pattern(data["ticket_pattern"], "ticket_pattern")
+    if "max_words" in data:
+        mw = data["max_words"]
+        if not (isinstance(mw, int) and not isinstance(mw, bool) and mw >= 1):
+            raise ConfigError("max_words must be a whole number of at least 1, not %s" % json.dumps(mw))
+        config["max_words"] = mw
+    if data.get("secret_patterns") is not None:
+        sp = data["secret_patterns"]
+        if not isinstance(sp, list):
+            raise ConfigError("secret_patterns must be a list of quoted regexes")
+        config["secret_patterns"] = sp
+        config["secret_res"] = [compile_pattern(p, "secret_patterns item %d" % (n + 1)) for n, p in enumerate(sp)]
+    return config, path
+
+
+# ---------------------------------------------------------------------------
+# Gate: check
+# ---------------------------------------------------------------------------
+
+CHECK_LINE_RE = re.compile(r"^(?P<file>.*?):(?P<line>\d+): (?P<sev>error|warning) \[(?P<rule>[^\]]+)\] (?P<section>[^:]+): (?P<message>.*?)\. Fix: (?P<fix>.*)\.$")
+CHECK_OK_RE = re.compile(r"^.*: ok \(.*\)(, \d+ warnings?)?$")
+
+
+def gate_check(path, doc, config, repo):
+    """[Problem], and whether the checker found a parse error."""
+    try:
+        result = subprocess.run([sys.executable, os.path.normpath(CHECK), "--as", "accepted", "--", path],
+                                capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return [Problem("error", 1, "file", "check.run", "the spec checker didn't run (%s)" % e,
+                        "make sure %s exists and python3 can run it" % os.path.normpath(CHECK))], False
+    out = []
+    parse_error = False
+    unknown = []
+    for line in result.stdout.splitlines():
+        m = CHECK_LINE_RE.match(line)
+        if m:
+            if m.group("rule") == "parse":
+                parse_error = True
+            out.append(Problem(m.group("sev"), int(m.group("line")), m.group("section"), "check." + m.group("rule"),
+                               m.group("message"), m.group("fix")))
+        elif not CHECK_OK_RE.match(line):
+            unknown.append(line)
+    if result.returncode not in (0, 1, 2) or unknown or (result.returncode != 0 and not any(p.severity == "error" for p in out)):
+        detail = (unknown or result.stderr.strip().splitlines() or ["exit %d" % result.returncode])[0]
+        out.append(Problem("error", 1, "file", "check.run", "the spec checker gave unexpected output (%s)" % detail.rstrip("."),
+                           "run skills/spec/check --as accepted on the spec and fix what it reports"))
+    return out, parse_error
+
+
+# ---------------------------------------------------------------------------
+# Gate: secrets (and personal data)
+# ---------------------------------------------------------------------------
+
+PLACEHOLDER_RE = re.compile(r"^(<[^>]*>|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}]*\}\}|[*x.X]+|"
+                            r"(?i:changeme|redacted|example|placeholder|password|secret|your[-_a-z]*))$")
+
+SECRET_RULES = [
+    ("secrets.private-key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----"), "a private key"),
+    ("secrets.aws-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "an AWS access key ID"),
+    ("secrets.github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}"), "a GitHub token"),
+    ("secrets.slack-token", re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "a Slack token"),
+    ("secrets.stripe-key", re.compile(r"\b[sr]k_live_[A-Za-z0-9]{16,}"), "a live Stripe key"),
+    ("secrets.google-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}"), "a Google API key"),
+    ("secrets.api-key", re.compile(r"\bsk-(?:[a-z]+-)?[A-Za-z0-9_-]{20,}"), "an API key"),
+    ("secrets.jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "a JSON Web Token"),
+]
+URL_CRED_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://([^\s:/@]+):([^\s@/]+)@")
+ASSIGN_RE = re.compile(r"(?i)\b(?:[a-z0-9_]*[_-])?(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)"
+                       r"\b[\"']?\s*[:=]\s*[\"'`]?([^\s\"'`,;]+)")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b")
+EMAIL_OK_DOMAINS = re.compile(r"(?i)(^|\.)(example\.(com|org|net)|example|test|invalid|localhost|users\.noreply\.github\.com)$")
+SSN_RE = re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b")
+CARD_RE = re.compile(r"(?<![\d-])[3-6](?:[ -]?\d){12,18}(?![\d-])")
+TEST_CARDS = {"4242424242424242", "4111111111111111", "5555555555554444", "378282246310005",
+              "6011111111111117", "4000056655665556", "5105105105105100", "4012888888881881"}
+PHONE_RE = re.compile(r"(?<![\w+])\+[1-9][0-9]{0,2}(?:[ .-]?\(?[0-9]{1,4}\)?){2,5}(?![\w])")
+
+
+def luhn(digits):
+    total = 0
+    for n, d in enumerate(reversed(digits)):
+        d = int(d)
+        if n % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def masked(value):
+    return value[:4] + "..."
+
+
+def gate_secrets(path, doc, config, repo):
+    out = []
+
+    def bad(no, rule, message, fix):
+        out.append(Problem("error", no, doc.section(no), rule, message, fix))
+
+    remove = "remove it from the spec and rotate it if it was ever real; name where the value comes from instead (an env var or secret store)"
+    for i, line in enumerate(doc.lines):
+        no = i + 1
+        for rule, regex, what in SECRET_RULES:
+            for m in regex.finditer(line):
+                bad(no, rule, "looks like %s (%s)" % (what, masked(m.group(0))), remove)
+        for m in URL_CRED_RE.finditer(line):
+            if not PLACEHOLDER_RE.match(m.group(2)):
+                bad(no, "secrets.url-credentials", "a URL carries a password (%s)" % masked(m.group(0)),
+                    "use a placeholder such as `<password>` or `${DB_PASSWORD}`")
+        for m in ASSIGN_RE.finditer(line):
+            value = m.group(2)
+            if len(value) >= 8 and re.search(r"[A-Za-z]", value) and re.search(r"[0-9]", value) and not PLACEHOLDER_RE.match(value):
+                bad(no, "secrets.assignment", "%s is set to a literal value (%s)" % (m.group(1).lower(), masked(value)),
+                    "use a placeholder such as `<%s>` or `${%s}`" % (m.group(1).lower(), m.group(1).upper().replace("-", "_")))
+        for n, regex in enumerate(config["secret_res"]):
+            for m in regex.finditer(line):
+                bad(no, "secrets.custom", "matches the repo's secret pattern %d (%s)" % (n + 1, masked(m.group(0))), remove)
+        for m in EMAIL_RE.finditer(line):
+            if not EMAIL_OK_DOMAINS.search(m.group(1)):
+                bad(no, "pii.email", "an email address (%s)" % masked(m.group(0)),
+                    "use an address at example.com, or describe the person by role")
+        for m in SSN_RE.finditer(line):
+            bad(no, "pii.ssn", "looks like a social security number (%s)" % masked(m.group(0)),
+                "remove it; use an obviously fake value such as `XXX-XX-XXXX`")
+        for m in CARD_RE.finditer(line):
+            digits = re.sub(r"\D", "", m.group(0))
+            if luhn(digits) and digits not in TEST_CARDS and len(set(digits)) > 1:
+                bad(no, "pii.card", "looks like a payment card number (%s)" % masked(digits),
+                    "remove it; use a well-known test card such as `4242 4242 4242 4242`")
+        for m in PHONE_RE.finditer(line):
+            digits = re.sub(r"\D", "", m.group(0))
+            if 8 <= len(digits) <= 15:
+                bad(no, "pii.phone", "looks like a phone number (%s)" % masked(m.group(0)),
+                    "remove it; describe the person by role, or use a reserved fictional number")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Gate: blocks
+# ---------------------------------------------------------------------------
+
+JSON_INFOS = ("json",)
+YAML_INFOS = ("yaml", "yml")
+OPENAPI_INFOS = ("openapi",)
+SCHEMA_KEYWORDS = {"$schema", "$id", "$comment", "title", "description", "examples", "default",
+                   "type", "properties", "required", "additionalProperties", "items", "enum", "const",
+                   "pattern", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems",
+                   "$defs", "definitions", "$ref"}
+TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
+
+
+def no_dupes(pairs):
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError("duplicate key %s" % json.dumps(k))
+        out[k] = v
+    return out
+
+
+def type_ok(value, t):
+    if t == "integer":
+        return isinstance(value, int) and not isinstance(value, bool) or (isinstance(value, float) and value.is_integer())
+    if t == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, TYPES.get(t, ()))
+
+
+def validate(value, schema, root, where, errors, unsupported):
+    """A small JSON Schema subset: the keywords in SCHEMA_KEYWORDS."""
+    if schema is True or schema == {}:
+        return
+    if schema is False:
+        errors.append("%s isn't allowed" % where)
+        return
+    if not isinstance(schema, dict):
+        return
+    for k in schema:
+        if k not in SCHEMA_KEYWORDS:
+            unsupported.add(k)
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        target = root
+        if isinstance(ref, str) and ref.startswith("#"):
+            for part in [p for p in ref[1:].split("/") if p]:
+                target = target.get(part) if isinstance(target, dict) else None
+        else:
+            target = None
+        if target is None:
+            unsupported.add("$ref %s" % ref)
+        else:
+            validate(value, target, root, where, errors, unsupported)
+    if "type" in schema:
+        types = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        if not any(type_ok(value, t) for t in types):
+            errors.append("%s is %s, not %s" % (where, json_type(value), " or ".join(types)))
+            return
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append("%s is %s, not one of %s" % (where, short(value), ", ".join(short(e) for e in schema["enum"])))
+    if "const" in schema and value != schema["const"]:
+        errors.append("%s is %s, not %s" % (where, short(value), short(schema["const"])))
+    if isinstance(value, str):
+        if "pattern" in schema and not re.search(schema["pattern"], value):
+            errors.append("%s %s doesn't match %s" % (where, short(value), schema["pattern"]))
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            errors.append("%s is shorter than %d" % (where, schema["minLength"]))
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append("%s is longer than %d" % (where, schema["maxLength"]))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append("%s is below %s" % (where, schema["minimum"]))
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append("%s is above %s" % (where, schema["maximum"]))
+    if isinstance(value, dict):
+        props = schema.get("properties", {})
+        for k in schema.get("required", []):
+            if k not in value:
+                errors.append("%s is missing %s" % (where, k))
+        for k in sorted(value, key=str):
+            if k in props:
+                validate(value[k], props[k], root, "%s.%s" % (where, k), errors, unsupported)
+            elif "additionalProperties" in schema:
+                ap = schema["additionalProperties"]
+                if ap is False:
+                    errors.append("%s has unknown field %s" % (where, k))
+                else:
+                    validate(value[k], ap, root, "%s.%s" % (where, k), errors, unsupported)
+    if isinstance(value, list):
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            errors.append("%s has fewer than %d items" % (where, schema["minItems"]))
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            errors.append("%s has more than %d items" % (where, schema["maxItems"]))
+        if isinstance(schema.get("items"), (dict, bool)):
+            for n, item in enumerate(value):
+                validate(item, schema["items"], root, "%s[%d]" % (where, n), errors, unsupported)
+
+
+def json_type(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    return "an array" if isinstance(value, list) else "an object"
+
+
+def short(value, limit=30):
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def openapi_problems(doc):
+    """[problem text] for an OpenAPI or Swagger document's required top-level fields."""
+    out = []
+    if not isinstance(doc, dict):
+        return ["an OpenAPI document must be a mapping"]
+    info = doc.get("info")
+    if "swagger" in doc:
+        if doc["swagger"] != "2.0":
+            out.append("swagger is %s, not \"2.0\"" % short(doc["swagger"]))
+        if not isinstance(doc.get("paths"), dict):
+            out.append("paths is missing or not a mapping")
+    else:
+        version = doc.get("openapi")
+        if not (isinstance(version, str) and re.match(r"^3\.\d+\.\d+$", version)):
+            out.append("openapi is %s, not a version string such as \"3.1.0\"" % ("missing" if version is None else short(version)))
+        elif version.startswith("3.0.") and not isinstance(doc.get("paths"), dict):
+            out.append("paths is missing or not a mapping")
+        elif not version.startswith("3.0.") and not any(isinstance(doc.get(k), dict) for k in ("paths", "components", "webhooks")):
+            out.append("none of paths, components or webhooks is a mapping")
+    if not isinstance(info, dict):
+        out.append("info is missing or not a mapping")
+    else:
+        for k in ("title", "version"):
+            if not isinstance(info.get(k), str):
+                out.append("info.%s is %s, not a string" % (k, "missing" if k not in info else json_type(info[k])))
+    return out
+
+
+def gate_blocks(path, doc, config, repo):
+    out = []
+
+    def bad(no, rule, message, fix, sev="error"):
+        out.append(Problem(sev, no, doc.section(no), rule, message, fix))
+
+    for block in doc.blocks:
+        info = block.info
+        if info not in JSON_INFOS + YAML_INFOS + OPENAPI_INFOS:
+            continue
+        text = "\n".join(block.lines)
+        first = block.start + 1
+        is_json = info in JSON_INFOS or (info in OPENAPI_INFOS and text.lstrip()[:1] == "{")
+        if is_json:
+            try:
+                value = json.loads(text, object_pairs_hook=no_dupes)
+            except ValueError as e:
+                lineno = getattr(e, "lineno", None)
+                bad(first + lineno - 1 if lineno else block.start, "blocks.json",
+                    "the ```%s block isn't valid JSON (%s)" % (info, getattr(e, "msg", str(e))),
+                    "make it valid JSON, or mark a sketch as ```text")
+                continue
+        else:
+            try:
+                value = parse_yaml(text, first)
+            except YamlUnsupported as e:
+                bad(e.line, "blocks.yaml-unsupported", "the ```%s block isn't checked: %s" % (info, e.message),
+                    "rewrite it within the gate's YAML subset, or check it by hand", "warning")
+                continue
+            except YamlError as e:
+                bad(e.line, "blocks.yaml", "the ```%s block isn't valid YAML (%s)" % (info, e.message),
+                    "correct the YAML, or mark a sketch as ```text")
+                continue
+        if info in OPENAPI_INFOS or (isinstance(value, dict) and ("openapi" in value or "swagger" in value)):
+            for problem in openapi_problems(value):
+                bad(block.start, "blocks.openapi", "the OpenAPI document's %s" % problem,
+                    "add the required OpenAPI fields, or mark a fragment as ```text")
+        schema_ref = value.get("$schema") if isinstance(value, dict) else None
+        if schema_ref is not None:
+            check_schema(schema_ref, value, block, repo, bad)
+    return out
+
+
+def check_schema(ref, value, block, repo, bad):
+    if not isinstance(ref, str) or re.match(r"^[a-z][a-z0-9+.-]*:", ref, re.I):
+        bad(block.start, "blocks.schema-unsupported", "the block's $schema %s isn't checked: only a repo-relative file is" % short(ref),
+            "name a schema file in the repo to have it checked, or ignore this", "warning")
+        return
+    full = os.path.normpath(os.path.join(repo, ref))
+    try:
+        with open(full, encoding="utf-8") as f:
+            schema_text = f.read()
+    except (OSError, UnicodeDecodeError):
+        bad(block.start, "blocks.schema", "the block names $schema %s, which isn't a readable file in the repo" % short(ref),
+            "give the schema's path from the repo root")
+        return
+    try:
+        schema = json.loads(schema_text) if full.endswith(".json") else parse_yaml(schema_text)
+    except (ValueError, YamlError) as e:
+        bad(block.start, "blocks.schema", "the schema %s doesn't parse (%s)" % (short(ref), getattr(e, "message", e)),
+            "correct the schema file")
+        return
+    errors, unsupported = [], set()
+    instance = dict((k, v) for k, v in value.items() if k != "$schema")
+    validate(instance, schema, schema, "the block", errors, unsupported)
+    for e in errors:
+        bad(block.start, "blocks.schema", "against %s, %s" % (ref, e), "make the block match its schema, or correct the schema")
+    if unsupported:
+        bad(block.start, "blocks.schema-unsupported", "the schema %s uses %s, which the gate doesn't check" % (ref, ", ".join(sorted(unsupported))),
+            "check those parts by hand, or ignore this", "warning")
+
+
+# ---------------------------------------------------------------------------
+# Gate: trace
+# ---------------------------------------------------------------------------
+
+INLINE_CODE_RE = re.compile(r"(`+)(.+?)\1")
+
+
+def gate_trace(path, doc, config, repo):
+    regex = config["ticket_re"]
+    if regex is None:
+        return []
+    for i in range(doc.body_start, len(doc.lines)):
+        if not doc.in_code[i] and regex.search(INLINE_CODE_RE.sub("", doc.lines[i])):
+            return []
+    goal = next((i + 1 for i in range(doc.body_start, len(doc.lines))
+                 if doc.section_of[i] == "Goal & Non-Goals" and H2_RE.match(doc.lines[i])), 1)
+    return [Problem("error", goal, doc.section(goal), "trace.ticket",
+                    "no ticket matching %s, which %s requires" % (config["ticket_pattern"], CONFIG_PATH),
+                    "name the ticket the spec implements in Goal & Non-Goals, outside code, such as 'Ticket: ABC-123'")]
+
+
+# ---------------------------------------------------------------------------
+# Gate: length
+# ---------------------------------------------------------------------------
+
+TABLE_SEP_RE = re.compile(r"^:?-{3,}:?$")
+
+
+def count_words(doc):
+    """Words in the body: whitespace-separated tokens, without fence lines or table pipes."""
+    n = 0
+    for i in range(doc.body_start, len(doc.lines)):
+        text = doc.lines[i]
+        if FENCE_RE.match(text):
+            continue
+        if text.lstrip().startswith("|"):
+            cells = [c.strip() for c in re.split(r"(?<!\\)\|", text.strip())[1:-1]]
+            if cells and all(TABLE_SEP_RE.match(c) for c in cells):
+                continue
+            text = " ".join(cells)
+        n += len(text.split())
+    return n
+
+
+def gate_length(path, doc, config, repo):
+    words = count_words(doc)
+    ceiling = config["max_words"]
+    if words <= ceiling:
+        return []
+    return [Problem("error", 1, "file", "length.words",
+                    "the spec is %d words, over the ceiling of %d" % (words, ceiling),
+                    "cut it below %d words or split it into smaller specs; don't fix findings by adding paragraphs" % ceiling)]
+
+
+GATE_FUNCS = {"check": gate_check, "secrets": gate_secrets, "blocks": gate_blocks,
+              "trace": gate_trace, "length": gate_length}
+
+
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+
+def format_problem(path, p):
+    fix = p.fix[0].upper() + p.fix[1:]
+    return "%s:%d: %s [%s] %s: %s. Fix: %s." % (path, p.line, p.severity, p.rule, p.section, p.message, fix)
+
+
+def gate_file(path, repo_opt):
+    """(exit code, output lines) for one spec."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return 2, ["%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a spec .md file." % (path, e)]
+    repo = os.path.abspath(repo_opt) if repo_opt else find_repo(path)
+    try:
+        config, _ = load_config(repo)
+    except ConfigError as e:
+        cfg = os.path.relpath(os.path.join(repo, CONFIG_PATH))
+        return 2, ["%s:%d: error [config] settings: %s. Fix: Correct the settings file; `gate --help` shows the format." % (cfg, e.line, e.message)]
+    doc = Doc(text)
+    problems = []
+    parse_error = False
+    failed = {}
+    for name in GATES:
+        if name == "check":
+            found, parse_error = gate_check(path, doc, config, repo)
+        else:
+            found = GATE_FUNCS[name](path, doc, config, repo)
+        errors = sum(1 for p in found if p.severity == "error")
+        if errors:
+            failed[name] = errors
+        problems.extend(found)
+    problems.sort(key=lambda p: (p.line, p.rule, p.message))
+    lines = [format_problem(path, p) for p in problems]
+    passed = [g for g in GATES if g not in failed]
+    if failed:
+        lines.append("%s: gates failed: %s%s" % (path, ", ".join("%s (%d)" % (g, failed[g]) for g in GATES if g in failed),
+                                                 "; passed: " + ", ".join(passed) if passed else ""))
+    else:
+        lines.append("%s: gates ok: %s" % (path, ", ".join(GATES)))
+    return (2 if parse_error else 1 if failed else 0), lines
+
+
+USAGE = ("usage: gate [--repo ROOT] <spec.md> [<spec.md> ...]\n"
+         "       gate --gates")
+
+
+def parse_args(argv):
+    opts = {"mode": "gate", "repo": None, "paths": []}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            opts["mode"] = "help"
+            return opts
+        if arg == "--gates":
+            opts["mode"] = "gates"
+            return opts
+        if arg == "--repo" or arg.startswith("--repo="):
+            if arg == "--repo":
+                if i + 1 >= len(argv):
+                    raise UsageError("--repo needs a value")
+                opts["repo"] = argv[i + 1]
+                i += 2
+            else:
+                opts["repo"] = arg[len("--repo="):]
+                i += 1
+            continue
+        if arg == "--":
+            opts["paths"].extend(argv[i + 1:])
+            break
+        if arg.startswith("-") and arg != "-":
+            raise UsageError("unknown option %r" % arg)
+        opts["paths"].append(arg)
+        i += 1
+    if opts["repo"] is not None and not os.path.isdir(opts["repo"]):
+        raise UsageError("--repo %r is not a directory" % opts["repo"])
+    if not opts["paths"]:
+        raise UsageError("no spec files given")
+    return opts
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        opts = parse_args(argv)
+    except UsageError as e:
+        sys.stderr.write("gate: %s\n%s\n" % (e, USAGE))
+        return 2
+    if opts["mode"] == "help":
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    if opts["mode"] == "gates":
+        for name in GATES:
+            print("%s:" % name)
+            for rule_id, text in RULE_TEXT.items():
+                if rule_id.split(".")[0] == name or (name == "secrets" and rule_id.startswith("pii.")):
+                    sev = "warning" if text.startswith("warning:") else "error"
+                    print("  %-26s %-7s %s" % (rule_id, sev, text[len("warning: "):] if sev == "warning" else text))
+        return 0
+    worst = 0
+    for path in opts["paths"]:
+        code, lines = gate_file(path, opts["repo"])
+        for line in lines:
+            print(line)
+        worst = max(worst, code)
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main())
