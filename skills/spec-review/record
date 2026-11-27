@@ -15,17 +15,19 @@ review-record.md next to this script):
     "spec": "<slug>",
     "risk": {"tier": "low" | "high", "risks": [<risk>, ...], "reasons": [<text>, ...]},
     "sign_off": null | {"signed_off_by": <name>, "signed_off_on": "YYYY-MM-DD", "risks": [<risk>, ...]},
-    "passes": [{"findings": [<finding>, ...], "open_blockers": <n>}, ...]
+    "passes": [{"findings": [<finding>, ...], "open_blockers": <n>,
+                "words": <n>, "gates": "passed" | "failed"}, ...]
   }
 
 spec, risk and sign_off are required; only `sign_off` may be null. `passes`
 (v0.4) is optional, so a v0.3 record stays valid: one entry per review pass,
 at most 3, each holding that pass's findings (each valid under the findings
 validator, ids unique, no two with the same rule, location and risk, as
-`findings --merge` leaves them) and its count of blockers. Every risk a
-finding in the last pass names must be in risk.risks. Unknown fields are
-rejected. Later releases add their own fields (gate results, questions) to
-this list.
+`findings --merge` leaves them) and its count of blockers, and optionally
+(v0.5, the revision loop) the spec's word count and its gate result for that
+pass. Every risk a finding in the last pass names must be in risk.risks.
+Unknown fields are rejected. Later releases add their own fields (the
+questions asked and answered) to this list.
 
 Prints one line per problem:
   <file>:<line>: error [<rule>] <field>: <problem>. Fix: <what to do>.
@@ -69,6 +71,8 @@ TIERS = ("low", "high")
 FIELDS = ("spec", "risk", "sign_off")
 OPTIONAL_FIELDS = ("passes",)
 PASS_FIELDS = ("findings", "open_blockers")
+OPTIONAL_PASS_FIELDS = ("words", "gates")
+GATE_RESULTS = ("passed", "failed")
 MAX_PASSES = 3
 RISK_FIELDS = ("tier", "risks", "reasons")
 SIGN_OFF_FIELDS = ("signed_off_by", "signed_off_on", "risks")
@@ -82,7 +86,8 @@ RULE_TEXT = {
     "record.risk": "risk has tier (low | high), risks (unique, from the risk list; empty exactly when tier is low) and reasons (text; non-empty when tier is high)",
     "record.sign-off": "sign_off is null, or has signed_off_by (a name), signed_off_on (a real YYYY-MM-DD date) and risks (the non-empty, unique risks shown to the person signing)",
     "record.passes": "passes, if present, is a list of 1 to %d passes, each with findings (valid findings, unique ids, "
-                     "no duplicate rule, location and risk) and open_blockers (its number of blockers); "
+                     "no duplicate rule, location and risk) and open_blockers (its number of blockers), and optionally "
+                     "words (the spec's word count) and gates (passed | failed); "
                      "the last pass's risks are in risk.risks" % MAX_PASSES,
 }
 
@@ -234,12 +239,18 @@ def check_passes(data, text):
             bad(field, "pass %d is %s, not an object" % (i, show(p)), "give {\"findings\": [...], \"open_blockers\": <n>}")
             continue
         missing = [f for f in PASS_FIELDS if f not in p]
-        extra = sorted(f for f in p if f not in PASS_FIELDS)
+        extra = sorted(f for f in p if f not in PASS_FIELDS + OPTIONAL_PASS_FIELDS)
         if missing:
             bad(field, "pass %d is missing %s" % (i, ", ".join(missing)), "add findings and open_blockers")
         if extra:
             bad(field, "pass %d has unknown field%s %s" % (i, "s" if len(extra) > 1 else "", ", ".join(extra)),
-                "keep only findings and open_blockers")
+                "keep only findings and open_blockers, and optionally words and gates")
+        if "words" in p and not (isinstance(p["words"], int) and not isinstance(p["words"], bool) and p["words"] >= 0):
+            bad(field + ".words", "words is %s, not a whole number" % show(p["words"]),
+                "give the spec's word count as `gate --counts` printed it for this pass")
+        if "gates" in p and p["gates"] not in GATE_RESULTS:
+            bad(field + ".gates", "gates is %s, not passed or failed" % show(p["gates"]),
+                "give passed when `gate` exited 0 on the spec this pass reviewed, failed when it exited 1")
         findings = p.get("findings")
         if "findings" in p and not isinstance(findings, list):
             bad(field + ".findings", "findings is %s, not a list" % show(findings),

@@ -47,11 +47,12 @@ The review record `specs/reviews/<slug>.json` (format in `risk.md`) gains an opt
 
 ```json
 "passes": [
-  { "findings": [ /* the array findings --merge printed */ ], "open_blockers": 1 }
+  { "findings": [ /* the array findings --merge printed */ ], "open_blockers": 1, "words": 655, "gates": "passed" }
 ]
 ```
 
-- One entry per review pass, at most 3. In v0.4 a review is one pass: writing a new review replaces `passes` with one entry. The loop (v0.5) appends.
+- One entry per review pass, at most 3. Writing a new review replaces `passes` with one entry. Each pass of the revision loop (`loop.md`) appends one.
+- `words` and `gates` (v0.5) are optional: the spec's word count and its gate result (`passed` or `failed`) for that pass. The loop writes both, and `converge` checks them against the specs it is given.
 - `findings` is the merged array: every finding valid, ids unique, no two with the same rule, location and risk.
 - `open_blockers` is the number of `blocker` findings in that pass.
 - Every `risk` a finding in the last pass names is in `risk.risks`, so the record's tier is the one `gate --risk --findings` computed from those findings.
