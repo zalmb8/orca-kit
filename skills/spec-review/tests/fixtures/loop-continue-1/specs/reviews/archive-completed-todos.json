@@ -44,13 +44,13 @@
         {
           "id": "security-1",
           "reviewer": "security",
-          "severity": "warning",
+          "severity": "nit",
           "kind": "fix",
-          "rule": "security.failure-mode",
+          "rule": "security.hardening",
           "location": {
-            "section": "Behavior & Edge Cases",
-            "line": 59,
-            "ref": "AC-5"
+            "section": "Interfaces & Data Contracts",
+            "line": 43,
+            "ref": null
           },
           "evidence": "the text at this location",
           "concrete_question": "What exactly should the spec say here?",

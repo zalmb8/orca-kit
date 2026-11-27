@@ -25,7 +25,7 @@ Every release keeps these.
 1. **Only deterministic checks are hard gates.** The same spec always gets the same pass/fail. An LLM finding never fails a gate.
 2. **AI escalates, a human decides.** For risky domains, block only to require a named human's sign-off; never make the final call.
 3. **Narrow reviewers in isolated contexts.** One rubric per reviewer, only the context that rubric needs, never the author's context or reasoning.
-4. **Typed findings.** Every finding has a severity (`blocker | warning | nit`), a location, a concrete question and a suggested fix. Only blockers loop; warnings and nits become comments.
+4. **Typed findings.** Every finding has a severity (`blocker | nit`, fixed by its rule), a location, a concrete question and a suggested fix. Only blockers loop; nits become comments.
 5. **Bounded loops.** At most 3 author–reviewer passes. Open blockers must strictly decrease each pass; if they don't, stop and ask a human.
 6. **No spec bloat.** A revision may not push the spec past its length ceiling. Fixing a blocker by adding paragraphs is a smell, not a fix.
 7. **Humans own the why, agents own the how.** Two valid readings of business logic are a question for the user, never a guess.
@@ -89,7 +89,7 @@ Patterns are Python regexes; quote them in single quotes. Risk terms are lowerca
 6. **Record.** Write `specs/reviews/<slug>.json` (format in `risk.md`): `spec`, `risk` as step 5 reported it, `sign_off` kept from an existing record (or `null`), and `passes` with one entry, `{"findings": <the merged array>, "open_blockers": <its blocker count>, "words": <words from step 2>, "gates": "passed" | "failed"}` (`gates` from step 1's exit code). A new review replaces any earlier `passes`. A pass of the [revision loop](#revision-loop) appends one instead. Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record` on it and fix only what you wrote wrongly; then re-run step 5, which reads the record for the sign-off. Writing the findings never writes a sign-off.
 7. **Report.** Show the gates' and the risk step's lines, then the findings grouped by severity, each with its reviewer, rule, location, evidence, question and suggested fix:
    - **Blockers** are open problems. The `fix` ones go back to the author through the [revision loop](#revision-loop). List the `decision` ones as questions for the user, with the options, and never pick one.
-   - **Warnings and nits** are comments: show them, never loop on them.
+   - **Nits** are comments: show them, never loop on them.
    - Nothing advisory fails the review: an LLM finding never turns a pass into a fail, and the result is step 5's exit code alone. Say how many blockers are open.
 
 If subagents can't be launched, say the reviewers didn't run and report only the gates and the risk step; never write findings yourself in a reviewer's place. The loop doesn't run either.
@@ -99,9 +99,9 @@ If subagents can't be launched, say the reviewers didn't run and report only the
 After the first pass, `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge` decides the next step. Read `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/loop.md` before running it: it has the steps of a pass, the hand-off, the verdicts, the same-blocker rule and the bloat guard.
 
 - **Run** `converge specs/<slug>.md` after pass 1, and `converge --previous $TMPDIR/spec-review/<slug>/pass-<n-1>/<slug>.md specs/<slug>.md` after each later pass. It reads the record's `passes`, re-runs the hard gates and counts words. It is deterministic and only reads files.
-- **Verdicts.** `converged` (exit 0): no open blockers and the gates pass. `continue` (exit 3): only `fix` blockers are open, fewer than before, and a pass is left. `stop` (exit 1), with one reason: `bloat-ceiling`, `bloat-growth`, `gate`, `oscillation` (a blocker the pass before didn't have), `no-progress` (open blockers didn't strictly decrease), `decision` or `cap` (pass 3 still has blockers). Exit 2 is an input error.
+- **Verdicts.** `converged` (exit 0): no open blockers and the gates pass. `continue` (exit 3): only `fix` blockers are open, fewer than before, and a pass is left. `stop` (exit 1), with one reason: `bloat-ceiling`, `bloat-growth`, `gate`, `oscillation` (a blocker the pass before didn't have, in a section the revision changed), `no-progress` (open blockers didn't strictly decrease), `decision` or `cap` (pass 3 still has blockers). A new blocker in a section the revision didn't change was caught late: a `note [loop.late]` line, not oscillation. Exit 2 is an input error.
 - **On continue**, save a copy of the spec outside the repo, then hand **only the `kind: fix` blockers** to the author: this session, revising through `orca-kit:spec` refine. Change only what the blockers point to, add no paragraphs, and don't interview the user. Then run a full pass again: the gates, the five reviewers **fresh** (never the earlier reviewers' contexts, never the author's reasoning or the blockers handed back), the merge, `gate --risk`, and a new entry appended to `passes`. At most 3 passes.
-- **Warnings and nits** are never handed back. They stay comments.
+- **Nits** are never handed back. They stay comments.
 - **On a stop**, stop: report the reason, `converge`'s lines, every pass's open-blocker count and each open blocker. On a `decision` stop, list each decision blocker as a question, with the options. On a bloat stop, the revision is rejected, and the author puts back the saved copy. Don't run another pass or revise further. v0.6 turns these stops into formal questions.
 - If `python3` isn't available, don't run the loop: report pass 1 and say the loop didn't run.
 
@@ -127,7 +127,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 ```
 
 - Every field is required. `location.line`, `location.ref` and `risk` may be `null`; nothing else may, and no other fields are allowed.
-- `severity` is `blocker`, `warning` or `nit`. Only blockers loop.
+- `severity` is `blocker` or `nit`, each mapped to one action. `blocker`: the spec can't be built or tested as written without someone guessing; a `fix` blocker goes back to the author, a `decision` blocker to the user. `nit`: a comment, with no action required. The level is fixed by the rule, never chosen per finding: each reviewer agent's rubric table declares every rule a blocker rule or a nit rule, and the validator rejects a finding whose severity isn't its rule's level, or whose rule isn't in a table. Only blockers loop. `findings --rules` prints the rule table, and `reviewers.md` lists it.
 - `kind` is `fix` (the author can resolve it from the spec and repo) or `decision` (needs the user: two valid readings, a tradeoff, missing business context). A `decision` blocker always goes to the user.
 - `rule` is `<reviewer>.<key>`, a stable key from the reviewer's rubric; it is how repeated findings are counted.
 - `concrete_question` is one question, ending in `?`.
@@ -139,7 +139,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings <findings.json> [...]` validates findings files. It needs only `python3`.
 
 - Run it on every reviewer's output before using any of it. A finding it rejects is **dropped and reported**, never repaired or guessed at; tell the user which ones and why.
-- It prints one line per problem, `<file>:<line>: error [<rule>] finding #<n> (<id>): <problem>. Fix: <what to do>.`, then a summary of the findings that passed: `<file>: ok, 4 findings: 2 blocker (1 decision), 1 warning, 1 nit`, or `<file>: 1 rejected, 3 kept: …` when any were dropped.
+- It prints one line per problem, `<file>:<line>: error [<rule>] finding #<n> (<id>): <problem>. Fix: <what to do>.`, then a summary of the findings that passed: `<file>: ok, 4 findings: 2 blocker (1 decision), 2 nit`, or `<file>: 1 rejected, 3 kept: …` when any were dropped.
 - It exits 0 when every finding is valid, 1 when any is rejected, and 2 for a usage error or a file that isn't a JSON array.
 - `--rules` lists the rules it checks.
 - `--merge <file> ...` combines reviewers' files into one validated, deduplicated array on stdout, with every drop reported on stderr; `reviewers.md` has the exact duplicate rule.

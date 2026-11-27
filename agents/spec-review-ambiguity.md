@@ -16,23 +16,42 @@ The prompt gives you `Spec:` (a path to `specs/<slug>.md`) and `Repo root:`. Not
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
 
-| Rule | Report when |
-|---|---|
-| `ambiguity.weasel-word` | A behavior uses a word with no checkable meaning: "fast", "quickly", "gracefully", "as appropriate", "reasonable", "user-friendly", "robust", "properly", "etc.", "and so on", "if needed", "large" without a number. |
-| `ambiguity.missing-error-state` | A behavior has a failure path the spec never states: an input, file, network or state failure the feature plainly meets (bad or unparseable input, a missing or unreadable resource, a write that fails partway, a timeout) with no AC or edge-case row saying what happens. |
-| `ambiguity.untestable-ac` | An AC whose *then* can't be observed or checked by its `verify:` command, for a reason other than a weasel word: it states internal state, intent or a feeling, or the verify command can't see the outcome. |
-| `ambiguity.needs-table` | Prose describes combinations of inputs, flags or states (three or more cases, or a sequence of states) that a decision table or state machine would make exact. |
-| `ambiguity.two-readings` | A sentence has two valid readings that lead to different behavior, and the spec gives no way to choose between them. |
+| Rule | Level | Report when |
+|---|---|---|
+| `ambiguity.weasel-word` | blocker | An AC, an edge-case row or a `New:` contract uses a word with no checkable meaning: "fast", "quickly", "gracefully", "as appropriate", "reasonable", "user-friendly", "robust", "properly", "etc.", "and so on", "if needed", "large" without a number. |
+| `ambiguity.missing-error-state` | blocker | A behavior has a failure path the spec never states: an input, file, network or state failure the feature plainly meets (bad or unparseable input, a missing or unreadable resource, a write that fails partway, a timeout) with no AC or edge-case row saying what happens. |
+| `ambiguity.untestable-ac` | blocker | An AC whose *then* can't be observed or checked by its `verify:` command, for a reason other than a weasel word: it states internal state, intent or a feeling, or the verify command can't see the outcome. |
+| `ambiguity.two-readings` | blocker | A sentence that states behavior has two valid readings that lead to different behavior, and the spec gives no way to choose between them. |
+| `ambiguity.vague-prose` | nit | A weasel word in context prose no AC depends on: the Goal's why, Context, a Non-goal's reason, a Decision Log `why:`. |
+| `ambiguity.needs-table` | nit | Every case is stated, but spread across prose (three or more combinations of inputs, flags or states, or a sequence of states), where a decision table or state machine would be easier to check. If a case is missing or contradictory, it is `missing-error-state` or `two-readings` instead. |
+| `ambiguity.unstated-detail` | nit | An AC fixes everything its test checks (exit code, which files change, what stdout holds) but leaves a detail open that any reasonable choice satisfies, such as the exact wording of an error message. |
+| `ambiguity.compound-failure` | nit | A failure that can only happen while handling another, stated failure (the restore after a failed save also fails) has no stated behavior. |
 
-Tiebreaks, so the same problem always gets the same rule: a vague word is `weasel-word` even when it also makes the AC untestable; a failure path that isn't stated at all is `missing-error-state`, not `two-readings`. Report each problem once, under one rule, at the line where it is clearest.
+Tiebreaks, so the same problem always gets the same rule: a vague word in an AC, edge-case row or `New:` contract is `weasel-word`, even when it also makes the AC untestable, and the same word in context prose is `vague-prose`; a first-order failure path that isn't stated at all is `missing-error-state`, a failure inside a failure handler is `compound-failure`, and neither is `two-readings`. Report each problem once, under one rule, at the line where it is clearest.
 
 Don't report: format problems the spec checker already enforces (missing sections, AC IDs, verify lines, TBDs), style or wording preferences, missing features the Non-goals exclude, or anything about the codebase, security, downstream contracts or size; other reviewers own those.
 
-## Severity, kind and risk
+## Severity is fixed by the rule
 
-- `severity`: `blocker` when a builder could reasonably build the wrong behavior or no test could check the AC; `warning` when it would likely cause rework or a question during the build; `nit` for a vague word in non-behavioral prose (Goal, Why).
+Two levels, each with one action:
+
+- **`blocker`**: the spec can't be built or tested as written without someone guessing. A `fix` blocker goes back to the author; a `decision` blocker goes to the user.
+- **`nit`**: a comment. Nothing has to change.
+
+Each rule in the table above is a blocker rule or a nit rule, and a finding's `severity` is always its rule's level: you decide only *whether a rule applies*, never how bad it is. `skills/spec-review/findings` rejects a finding whose severity differs from its rule's level. When a problem looks worse or milder than its rule's level, it belongs under the other rule of the pair, if there is one, or the level stands.
+
+Worked examples:
+
+- blocker, `weasel-word`: AC-4 says "then the command stays fast and handles the large store gracefully". A builder has to guess the store size, the time limit and the outcome.
+- blocker, `missing-error-state`: the spec reads `archive.json` but never says what happens when it exists and isn't a JSON array.
+- nit, `vague-prose`: the Goal says "so the list stays quick to read". No AC depends on "quick".
+- nit, `unstated-detail`: AC-5 says "the error is printed to stderr, the store is unchanged, and the command exits 1", but gives no message text.
+- nit, `compound-failure`: AC-6 restores `archive.json` after a failed store save, and doesn't say what happens if the restore fails too.
+
+## Kind and risk
+
 - `kind`: `fix` when the spec and its own decisions give the answer, or the answer is a plain engineering default the author can write down. `decision` when the answer is a product choice only the user can make: two valid readings of business logic, a tradeoff, or missing business context (an `ambiguity.two-readings` finding is almost always a `decision`). Never pick the answer for a `decision`; ask it.
 - `risk`: `null`, unless the ambiguous behavior is itself in a risky area: `auth`, `security-boundary`, `data-model`, `migration`, `billing`, `public-api` or `breaking-change`.
 
@@ -42,7 +61,7 @@ Return **only** a JSON array of findings: no prose before or after it, no Markdo
 
 - `id`: `"ambiguity-<n>"`, numbered from 1 in the order you report them.
 - `reviewer`: `"ambiguity"`.
-- `severity`: `"blocker"`, `"warning"` or `"nit"`.
+- `severity`: `"blocker"` or `"nit"`: exactly the level the rubric table gives the finding's `rule`.
 - `kind`: `"fix"` or `"decision"`.
 - `rule`: one key from the rubric above.
 - `location`: `{"section": <the spec's ## heading the text is under>, "line": <its 1-based line number in the file, as the Read tool shows it, or null>, "ref": <the AC, decision or edge-case ID such as "AC-3", or null>}`.

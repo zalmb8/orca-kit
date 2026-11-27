@@ -35,9 +35,9 @@
   {
     "id": "blast-radius-2",
     "reviewer": "blast-radius",
-    "severity": "warning",
+    "severity": "nit",
     "kind": "fix",
-    "rule": "blast-radius.unmentioned-contract",
+    "rule": "blast-radius.stale-reference",
     "location": {
       "section": "Interfaces & Data Contracts",
       "line": null,
@@ -53,7 +53,7 @@
     "reviewer": "slicer",
     "severity": "nit",
     "kind": "fix",
-    "rule": "slicer.split",
+    "rule": "slicer.independent-parts",
     "location": {
       "section": "Goal & Non-Goals",
       "line": 9,

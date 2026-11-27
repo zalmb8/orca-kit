@@ -27,7 +27,7 @@ re-runs the hard gates on the spec, counts its words, and prints one verdict:
     bloat-ceiling  the revision put the spec over max_words
     bloat-growth   the revision grew the spec by more than max_growth
     gate           a hard gate fails on the spec
-    oscillation    the pass has a blocker that the pass before didn't
+    oscillation    the pass has a new blocker in a section the revision changed
     no-progress    open blockers didn't strictly decrease
     decision       an open blocker is `kind: decision`, for the user
     cap            pass 3 still has open blockers
@@ -36,13 +36,24 @@ Two blockers are the same blocker across passes when they have the same
 `rule` and the same `location.section` (ignoring case and runs of
 whitespace), counted as a multiset; line, ref and wording are ignored,
 because a revision moves lines and fresh reviewers word and anchor the same
-problem differently. The bloat checks need --previous, so they run from
-pass 2 on; growth is (words - previous words) / previous words.
+problem differently. A blocker is new when the pass before had no blocker
+with its rule and section. A new blocker is oscillation only when the
+revision caused it: its section's text differs between --previous and the
+spec (sections are the `## ` headings outside code, compared by heading,
+ignoring case and runs of whitespace, and by their lines with trailing
+spaces dropped; a section missing from either file counts as changed). A new
+blocker in a section the revision didn't touch was caught late: it is
+reported as a `note [loop.late]` line, and the loop goes on if open blockers
+still strictly fell (otherwise it stops with no-progress). The bloat checks
+and the section comparison need --previous, so they run from pass 2 on;
+growth is (words - previous words) / previous words.
 
 Prints, in the gate's format, one line per problem behind a stop:
   <file>:<line>: error [loop.<reason>] <section>: <problem>. Fix: <what to do>.
+one note per blocker caught late:
+  <file>:<line>: note [loop.late] <section>: <problem>. Fix: <what to do>.
 then a status line and the verdict:
-  <file>: pass 2 of 3: 1 open blocker (1 fix, 0 decision), was 3, 0 new; 640 words, was 612 (+4.6%); gates ok
+  <file>: pass 2 of 3: 1 open blocker (1 fix, 0 decision), was 3, 1 new (0 in changed sections); 640 words, was 612 (+4.6%); gates ok
   <file>: continue to pass 3: hand 1 fix blocker to the author
   <file>: converged at pass 2
   <file>: stop at pass 2: oscillation
@@ -88,7 +99,8 @@ RULE_TEXT = {
     "loop.bloat-ceiling": "stop: the revision put the spec over the length ceiling (max_words)",
     "loop.bloat-growth": "stop: the revision grew the spec by more than max_growth of its previous words in one pass",
     "loop.gate": "stop: a hard gate fails on the spec (run gate for its lines)",
-    "loop.oscillation": "stop: the pass has a blocker (rule and section) the pass before didn't",
+    "loop.oscillation": "stop: the pass has a blocker (rule and section) the pass before didn't, in a section the revision changed",
+    "loop.late": "note: a new blocker in a section the revision didn't change was caught late; not oscillation",
     "loop.no-progress": "stop: the open-blocker count didn't strictly decrease",
     "loop.decision": "stop: an open blocker is kind decision, a question for the user",
     "loop.cap": "stop: pass %d still has open blockers" % MAX_PASSES,
@@ -134,6 +146,26 @@ def new_blockers(current, previous):
         else:
             out.append(f)
     return out
+
+
+def sections_of(text):
+    """{heading: text} for each `## ` section of a spec, outside code; headings ignore case and spacing."""
+    doc = GATE.Doc(text)
+    out, current = {}, None
+    for i in range(doc.body_start, len(doc.lines)):
+        line = doc.lines[i]
+        if not doc.in_code[i] and line.startswith("## "):
+            current = FINDINGS._norm(line[3:])
+            out[current] = []
+        elif current is not None:
+            out[current].append(line.rstrip())
+    return dict((k, "\n".join(v).strip("\n")) for k, v in out.items())
+
+
+def changed_sections(text, previous_text):
+    """The headings (normalised) whose text differs between the two specs, or that only one of them has."""
+    a, b = sections_of(text), sections_of(previous_text)
+    return set(k for k in set(a) | set(b) if a.get(k) != b.get(k))
 
 
 def read_spec(path, what):
@@ -183,9 +215,11 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
         raise InputError(gate_lines)
     gates_ok = gate_code == 0
     words = GATE.count_words(GATE.Doc(text))
-    prev_words = None
+    prev_words, changed = None, set()
     if previous is not None:
-        prev_words = GATE.count_words(GATE.Doc(read_spec(previous, "previous spec")))
+        prev_text = read_spec(previous, "previous spec")
+        prev_words = GATE.count_words(GATE.Doc(prev_text))
+        changed = changed_sections(text, prev_text)
 
     last, before = passes[-1], (passes[-2] if n >= 2 else None)
     mismatch = []
@@ -204,11 +238,14 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
     decisions = [f for f in current if f["kind"] == "decision"]
     fixes = open_n - len(decisions)
     new = new_blockers(current, blockers_of(before)) if before is not None else []
+    caused = [f for f in new if FINDINGS._norm(f["location"]["section"]) in changed or
+              FINDINGS._norm(f["location"]["section"]) not in sections_of(text)]
+    late = [f for f in new if f not in caused]
     was = len(blockers_of(before)) if before is not None else None
 
     status = "%s: pass %d of %d: %s (%d fix, %d decision)" % (spec, n, MAX_PASSES, plural(open_n, "open blocker"), fixes, len(decisions))
     if was is not None:
-        status += ", was %d, %d new" % (was, len(new))
+        status += ", was %d, %d new (%d in changed sections)" % (was, len(new), len(caused))
     status += "; %s%s; gates %s" % (plural(words, "word"), growth_text(words, prev_words), "ok" if gates_ok else "failed")
 
     problems = []
@@ -232,11 +269,11 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
         failed = [l for l in gate_lines if ": gates failed: " in l]
         problem(1, reason, "file", "a hard gate fails (%s)" % (failed[0].split(": gates failed: ", 1)[1] if failed else "see gate"),
                 "run gate on the spec for every failing line; the loop goes on only on a spec that passes its gates")
-    elif new:
+    elif caused:
         reason = "oscillation"
-        for f in new:
+        for f in caused:
             problem(f["location"]["line"] or 1, reason, f["location"]["section"],
-                    "blocker %s (%s, %s) is new in pass %d" % (f["rule"], f["id"], f["kind"], n),
+                    "blocker %s (%s, %s) is new in pass %d, in a section the revision changed" % (f["rule"], f["id"], f["kind"], n),
                     "stop and ask the user; the revision introduced a blocker, so another pass won't converge")
     elif was is not None and open_n >= was:
         reason = "no-progress"
@@ -255,7 +292,10 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
         problem(1, reason, "file", "pass %d of %d still has %s" % (n, MAX_PASSES, plural(open_n, "open blocker")),
                 "stop and ask the user; the loop has no passes left")
 
-    lines = problems + [status]
+    notes = ["%s:%d: note [loop.late] %s: blocker %s (%s, %s) is new in pass %d, in a section the revision didn't change. "
+             "Fix: Treat it as caught late, not caused by the revision; it is handed back like any other blocker." % (
+                 spec, f["location"]["line"] or 1, f["location"]["section"], f["rule"], f["id"], f["kind"], n) for f in late]
+    lines = problems + notes + [status]
     if reason:
         return 1, lines + ["%s: stop at pass %d: %s" % (spec, n, reason)]
     if open_n == 0:

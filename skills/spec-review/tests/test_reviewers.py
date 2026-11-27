@@ -87,8 +87,20 @@ def write(tmp, name, data):
     return path
 
 
-def finding(reviewer="ambiguity", key="weasel-word", n=1, severity="warning", kind="fix",
+_LEVELS = {}
+
+
+def level_of(rule):
+    """The severity the rule table (the agents' rubrics) fixes for a rule."""
+    if not _LEVELS:
+        _LEVELS.update(load("spec_review_findings_levels", FINDINGS).read_rule_table())
+    return _LEVELS[rule]
+
+
+def finding(reviewer="ambiguity", key="vague-prose", n=1, severity=None, kind="fix",
             section="Behavior & Edge Cases", line=10, ref="AC-1", risk=None):
+    if severity is None:
+        severity = level_of("%s.%s" % (reviewer, key))
     return {
         "id": "%s-%d" % (reviewer, n), "reviewer": reviewer, "severity": severity, "kind": kind,
         "rule": "%s.%s" % (reviewer, key),
@@ -135,7 +147,8 @@ class Agents(unittest.TestCase):
             with self.subTest(reviewer=reviewer):
                 body = parse_agent(agent_path(reviewer))[1]
                 headings = re.findall(r"^## (.+)$", body, re.M)
-                self.assertEqual(headings, ["Input", "Context you may read", "Rubric", "Severity, kind and risk", "Output"])
+                self.assertEqual(headings, ["Input", "Context you may read", "Rubric", "Severity is fixed by the rule",
+                                            "Kind and risk", "Output"])
 
     def test_rule_keys_are_well_formed_and_namespaced(self):
         for reviewer, rules in all_rules().items():
@@ -196,7 +209,7 @@ class Agents(unittest.TestCase):
         for reviewer in REVIEWERS:
             with self.subTest(reviewer=reviewer):
                 body = parse_agent(agent_path(reviewer))[1]
-                part = body[body.index("## Severity, kind and risk"):body.index("## Output")]
+                part = body[body.index("## Kind and risk"):body.index("## Output")]
                 bullet = re.search(r"^- `risk`: (.*)$", part, re.M).group(1)
                 short_keys = {r.split(".", 1)[1] for r in all_rules()[reviewer]}
                 named = set(re.findall(r"`([a-z-]+)`", bullet)) - {"null"} - short_keys
@@ -310,21 +323,21 @@ class Merge(unittest.TestCase):
 
     def test_distinct_findings_are_all_kept_in_order(self):
         a = [finding(n=1), finding(key="missing-error-state", n=2)]
-        b = [finding(reviewer="slicer", key="oversized", kind="decision", severity="blocker", section="Goal & Non-Goals", line=13, ref=None)]
+        b = [finding(reviewer="slicer", key="oversized", kind="decision", section="Goal & Non-Goals", line=13, ref=None)]
         result, out = self.merge(a, b)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([f["id"] for f in out], ["ambiguity-1", "ambiguity-2", "slicer-1"])
         self.assertEqual(result.stderr.splitlines()[-1],
-                         "merged: 3 findings from 2 files: 1 blocker (1 decision), 2 warning, 0 nit; 0 duplicates dropped, 0 rejected")
+                         "merged: 3 findings from 2 files: 2 blocker (1 decision), 1 nit; 0 duplicates dropped, 0 rejected")
 
     def test_same_rule_and_location_is_a_duplicate(self):
-        a = [finding(n=1, severity="nit"), finding(n=2, severity="blocker"), finding(n=3, severity="warning")]
+        a = [finding(n=1), finding(n=2), finding(n=3)]
         result, out = self.merge(a)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual([f["id"] for f in out], ["ambiguity-2"])
+        self.assertEqual([f["id"] for f in out], ["ambiguity-1"])
         notes = [l for l in result.stderr.splitlines() if "[merge.duplicate]" in l]
         self.assertEqual(len(notes), 2)
-        self.assertIn("same rule and location as ambiguity-2", notes[0])
+        self.assertIn("same rule and location as ambiguity-1", notes[0])
 
     def test_section_compares_ignoring_case_and_spacing(self):
         a = [finding(n=1), finding(n=2, section="  behavior   &  edge cases ", ref="ac-1")]
@@ -348,11 +361,11 @@ class Merge(unittest.TestCase):
         self.assertEqual([f["id"] for f in out], ["ambiguity-1"])
 
     def test_kept_finding_takes_the_place_of_the_first(self):
-        a = [finding(n=1, severity="nit"), finding(n=2, key="needs-table"), finding(n=3, severity="blocker")]
+        a = [finding(n=1), finding(n=2, key="needs-table"), finding(n=3, kind="decision")]
         self.assertEqual([f["id"] for f in self.merge(a)[1]], ["ambiguity-3", "ambiguity-2"])
 
     def test_a_merge_never_drops_a_risk(self):
-        a = [finding(n=1, severity="blocker"), finding(n=2, severity="nit", risk="migration")]
+        a = [finding(n=1), finding(n=2, risk="migration")]
         out = self.merge(a)[1]
         self.assertEqual([f["risk"] for f in out], [None, "migration"])
 
@@ -389,13 +402,13 @@ class Merge(unittest.TestCase):
         self.assertEqual(run(FINDINGS, path).returncode, 0)
 
     def test_deterministic(self):
-        a = [finding(n=i, severity=s, line=l) for i, (s, l) in enumerate(
-            [("nit", 1), ("blocker", 1), ("warning", 2), ("warning", 1), ("nit", 2)], 1)]
+        a = [finding(n=i, kind=k, line=l) for i, (k, l) in enumerate(
+            [("fix", 1), ("decision", 1), ("fix", 2), ("decision", 2), ("fix", 1)], 1)]
         runs = {self.merge(a, [finding(reviewer="security", key="data-flow", n=1)])[0].stdout for _ in range(3)}
         self.assertEqual(len(runs), 1)
 
     def test_dedupe_function_matches_the_script(self):
-        a = [finding(n=1, severity="nit"), finding(n=2, severity="blocker"), finding(n=3, line=4)]
+        a = [finding(n=1), finding(n=2, kind="decision"), finding(n=3, line=4)]
         kept, dropped = self.m.dedupe(a)
         self.assertEqual([f["id"] for f in kept], [f["id"] for f in self.merge(a)[1]])
         self.assertEqual([(d["id"], k["id"]) for d, k in dropped], [("ambiguity-1", "ambiguity-2")])
@@ -450,11 +463,11 @@ class RecordPasses(unittest.TestCase):
                 self.assertEqual(run(RECORD, os.path.join(d, os.listdir(d)[0])).returncode, 0)
 
     def test_one_pass(self):
-        fs = [finding(n=1, severity="blocker"), finding(reviewer="slicer", key="oversized", n=1, severity="nit")]
+        fs = [finding(n=1, key="weasel-word"), finding(reviewer="slicer", key="independent-parts", n=1)]
         result = self.check(self.with_passes([{"findings": fs, "open_blockers": 1}]))
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertTrue(result.stdout.strip().endswith(
-            "ok, risk low, no sign-off, 1 pass: 2 findings: 1 blocker (0 decision), 0 warning, 1 nit"))
+            "ok, risk low, no sign-off, 1 pass: 2 findings: 1 blocker (0 decision), 1 nit"))
 
     def test_an_empty_pass_is_valid(self):
         self.assertEqual(self.check(self.with_passes([{"findings": [], "open_blockers": 0}])).returncode, 0)
@@ -473,7 +486,7 @@ class RecordPasses(unittest.TestCase):
             "invalid finding": [{"findings": [bad_finding], "open_blockers": 0}],
             "duplicate id": [{"findings": [finding(n=1), finding(n=1, line=3)], "open_blockers": 0}],
             "duplicate rule and location": [{"findings": [finding(n=1), finding(n=2)], "open_blockers": 0}],
-            "wrong blocker count": [{"findings": [finding(n=1, severity="blocker")], "open_blockers": 0}],
+            "wrong blocker count": [{"findings": [finding(n=1, key="weasel-word")], "open_blockers": 0}],
             "boolean blocker count": [{"findings": [], "open_blockers": False}],
             "risk not in the tier": [{"findings": [finding(n=1, risk="public-api")], "open_blockers": 0}],
         }
@@ -489,7 +502,7 @@ class RecordPasses(unittest.TestCase):
         self.assertEqual(self.check(data).returncode, 0)
 
     def test_merge_output_is_a_valid_pass(self):
-        fs = [finding(n=1, severity="nit"), finding(n=2, severity="blocker"), finding(reviewer="security", key="data-flow", n=1)]
+        fs = [finding(n=1), finding(n=2, key="weasel-word"), finding(reviewer="security", key="data-flow", n=1)]
         merged = json.loads(run(FINDINGS, "--merge", write(self.tmp, "a.json", fs)).stdout)
         blockers = sum(1 for f in merged if f["severity"] == "blocker")
         self.assertEqual(self.check(self.with_passes([{"findings": merged, "open_blockers": blockers}])).returncode, 0)
@@ -548,6 +561,55 @@ class Counts(unittest.TestCase):
         with open(GATE, encoding="utf-8") as f:
             text = f.read()
         self.assertIsNone(re.search(r"open\([^)]*['\"][wax]\+?['\"]|\.write_text\(|json\.dump\(", text))
+
+
+class RuleLevels(unittest.TestCase):
+    """v0.5: every rule is a blocker rule or a nit rule, declared once, in its agent's rubric."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.table = load("spec_review_findings_table", FINDINGS).read_rule_table()
+
+    def test_table_covers_exactly_the_rubric_rules(self):
+        every = {r for rules in all_rules().values() for r in rules}
+        self.assertEqual(set(self.table), every)
+
+    def test_every_reviewer_has_both_levels(self):
+        for reviewer in REVIEWERS:
+            with self.subTest(reviewer=reviewer):
+                levels = {lvl for r, lvl in self.table.items() if r.startswith(reviewer + ".")}
+                self.assertEqual(levels, {"blocker", "nit"})
+
+    def test_worked_examples_use_the_rules_level(self):
+        for reviewer in REVIEWERS:
+            with self.subTest(reviewer=reviewer):
+                body = parse_agent(agent_path(reviewer))[1]
+                part = body[body.index("## Severity is fixed by the rule"):body.index("## Kind and risk")]
+                examples = re.findall(r"^- (blocker|nit), `([a-z0-9.-]+)`: ", part, re.M)
+                self.assertEqual({lvl for lvl, _ in examples}, {"blocker", "nit"})
+                for level, key in examples:
+                    self.assertEqual(self.table["%s.%s" % (reviewer, key)], level, key)
+
+    def test_reviewers_md_lists_each_rule_under_its_level(self):
+        with open(os.path.join(SKILL_DIR, "reviewers.md"), encoding="utf-8") as f:
+            text = f.read()
+        for reviewer in REVIEWERS:
+            row = re.search(r"^\| `spec-review-%s` \|.*\| (.*) \| (.*) \|$" % re.escape(reviewer), text, re.M)
+            with self.subTest(reviewer=reviewer):
+                self.assertIsNotNone(row)
+                blockers, nits = (set(re.findall(r"`([a-z0-9.-]+)`", c)) for c in row.groups())
+                self.assertEqual(blockers, {r for r, l in self.table.items() if l == "blocker" and r.startswith(reviewer + ".")})
+                self.assertEqual(nits, {r for r, l in self.table.items() if l == "nit" and r.startswith(reviewer + ".")})
+
+    def test_seeded_examples_are_blocker_rules(self):
+        with open(os.path.join(EXAMPLES, "expected.json"), encoding="utf-8") as f:
+            for seed in json.load(f):
+                self.assertEqual(self.table[seed["rule"]], "blocker", seed["rule"])
+
+    def test_no_agent_mentions_a_warning_severity(self):
+        for reviewer in REVIEWERS:
+            with self.subTest(reviewer=reviewer):
+                self.assertNotIn("warning", parse_agent(agent_path(reviewer))[1])
 
 
 class Docs(unittest.TestCase):

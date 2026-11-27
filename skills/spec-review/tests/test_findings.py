@@ -26,7 +26,7 @@ NAME = "findings.json"
 
 PROBLEM_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+): error \[(?P<rule>[a-z.-]+)\] (?P<where>[^:]+): .+\. Fix: .+\.$")
 SUMMARY_RE = re.compile(r"^(?P<file>.+?): (?:ok, (?P<n>\d+) findings?|(?P<rejected>\d+) rejected, (?P<kept>\d+) kept): "
-                        r"(?P<blocker>\d+) blocker \((?P<decision>\d+) decision\), (?P<warning>\d+) warning, (?P<nit>\d+) nit$")
+                        r"(?P<blocker>\d+) blocker \((?P<decision>\d+) decision\), (?P<nit>\d+) nit$")
 
 
 def run(*args):
@@ -78,6 +78,10 @@ FIXTURE_EXPECTATIONS = {
     "duplicate-id": (1, {("finding.id", "finding #4 (ambiguity-3)")}),
     "finding-not-object": (1, {("finding.object", "finding #2")}),
     "two-rejected": (1, {("finding.severity", "finding #1 (ambiguity-3)"), ("finding.location", "finding #4 (slicer-1)")}),
+    # Severity is two levels, fixed by the rule (v0.5).
+    "severity-warning": (1, {("finding.severity", "finding #1 (ambiguity-3)")}),
+    "severity-not-the-rules": (1, {("finding.severity", "finding #1 (ambiguity-3)")}),
+    "rule-not-in-table": (1, {("finding.rule", "finding #1 (ambiguity-3)")}),
     # Not a findings file at all.
     "not-json": (2, {("parse", "file")}),
     "not-array": (2, {("parse", "file")}),
@@ -123,7 +127,7 @@ class DoneCriterion(unittest.TestCase):
         self.assertEqual((s["rejected"], s["kept"]), ("1", "3"))
 
     def test_bad_severity(self):
-        self.assert_rejected("bad-severity", 'severity is "high", not one of blocker, warning, nit')
+        self.assert_rejected("bad-severity", 'severity is "high", not one of blocker, nit')
 
     def test_no_location(self):
         self.assert_rejected("missing-location", "location is missing")
@@ -132,17 +136,76 @@ class DoneCriterion(unittest.TestCase):
         self.assert_rejected("missing-concrete-question", "concrete_question is missing")
 
 
+class RuleFixedSeverity(unittest.TestCase):
+    """v0.5: severity is blocker | nit, and the rule table fixes it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_module()
+
+    def test_warning_is_rejected_with_the_fix(self):
+        out = run(fixture("severity-warning")).stdout
+        self.assertIn('severity is "warning", not one of blocker, nit. Fix: Use blocker or nit, as the rule decides; '
+                      'warning is no longer a severity.', out)
+
+    def test_severity_must_be_the_rules_level(self):
+        out = run(fixture("severity-not-the-rules")).stdout
+        self.assertIn('severity is "nit", but ambiguity.weasel-word is a blocker rule. Fix: Set severity to blocker', out)
+
+    def test_rule_must_be_in_the_table(self):
+        out = run(fixture("rule-not-in-table")).stdout
+        self.assertIn('rule "ambiguity.wishy-washy" isn\'t in the rule table. Fix: Use one of ambiguity.', out)
+
+    def test_table_is_read_from_the_agents(self):
+        table = self.m.read_rule_table()
+        self.assertEqual(set(table.values()), set(self.m.SEVERITIES))
+        self.assertEqual(table["ambiguity.weasel-word"], "blocker")
+        self.assertEqual(table["ambiguity.vague-prose"], "nit")
+        self.assertEqual(sorted({r.split(".")[0] for r in table}),
+                         ["ambiguity", "architecture", "blast-radius", "security", "slicer"])
+
+    def write_agent(self, tmp, name, rubric):
+        with open(os.path.join(tmp, "spec-review-%s.md" % name), "w", encoding="utf-8") as f:
+            f.write("---\nname: spec-review-%s\n---\n\n## Rubric\n\n%s\n## Output\n" % (name, rubric))
+
+    def test_a_broken_table_is_an_error(self):
+        header = "| Rule | Level | Report when |\n|---|---|---|\n"
+        cases = {
+            "no table": "Just prose.\n",
+            "old two-column table": "| Rule | Report when |\n|---|---|\n| `x.a` | when |\n",
+            "level not blocker or nit": header + "| `x.a` | warning | when |\n",
+            "wrong prefix": header + "| `y.a` | nit | when |\n",
+            "listed twice": header + "| `x.a` | nit | when |\n| `x.a` | blocker | when |\n",
+            "empty table": header,
+        }
+        for name, rubric in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                self.write_agent(tmp, "x", rubric)
+                with self.assertRaises(self.m.RuleTableError):
+                    self.m.read_rule_table(tmp)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(self.m.RuleTableError):
+                self.m.read_rule_table(tmp)
+            self.write_agent(tmp, "x", header + "| `x.a` | nit | when |\n| `x.b` | blocker | when |\n")
+            self.assertEqual(self.m.read_rule_table(tmp), {"x.a": "nit", "x.b": "blocker"})
+
+    def test_rules_lists_the_table(self):
+        out = run("--rules").stdout
+        self.assertRegex(out, r"(?m)^  ambiguity\.weasel-word +blocker$")
+        self.assertRegex(out, r"(?m)^  slicer\.independent-parts +nit$")
+
+
 class Summary(unittest.TestCase):
     def test_valid_file_counts_by_severity(self):
         result = run(fixture("valid"))
-        self.assertEqual(result.stdout.strip(), "%s: ok, 4 findings: 2 blocker (1 decision), 1 warning, 1 nit" % fixture("valid"))
+        self.assertEqual(result.stdout.strip(), "%s: ok, 4 findings: 2 blocker (1 decision), 2 nit" % fixture("valid"))
 
     def test_empty_file_is_valid(self):
         self.assertEqual(summary(run(fixture("valid-empty")).stdout)["n"], "0")
 
     def test_rejected_findings_are_dropped_from_the_counts(self):
         s = summary(run(fixture("two-rejected")).stdout)
-        self.assertEqual((s["rejected"], s["kept"], s["blocker"], s["warning"], s["nit"]), ("2", "2", "1", "1", "0"))
+        self.assertEqual((s["rejected"], s["kept"], s["blocker"], s["nit"]), ("2", "2", "1", "1"))
 
 
 class SchemaAgrees(unittest.TestCase):

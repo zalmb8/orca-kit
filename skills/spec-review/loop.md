@@ -29,7 +29,7 @@ The loop never runs a fourth pass: `record` rejects a fourth entry, and `converg
 
 The author gets a list of the last pass's blockers with `kind: fix`. For each one it gets the `rule`, `location`, `evidence`, `concrete_question` and `suggested_fix`, exactly as the merged findings hold them. It gets nothing else:
 
-- no warnings or nits, which stay comments and are shown to the user in the report;
+- no nits, which stay comments and are shown to the user in the report;
 - no `decision` blockers, which the loop never hands back (the verdict stops on them);
 - no reviewer conversation, because a reviewer returns nothing but its findings.
 
@@ -49,9 +49,9 @@ Refine has no step that takes findings as input, and `orca-kit:spec` isn't chang
 | stop: `bloat-ceiling` | The revision put the spec over `max_words` | 1 | Rejects the revision: the author puts back the saved copy from the pass before, and the skill reports the stop |
 | stop: `bloat-growth` | The revision grew the spec by more than `max_growth` of its previous words | 1 | The same as `bloat-ceiling` |
 | stop: `gate` | A hard gate fails on the spec, after a revision or on pass 1 | 1 | Shows `gate`'s failing lines. Gate failures are fixed through refine with the user, outside the loop |
-| stop: `oscillation` | The pass has a blocker the pass before didn't (see [The same blocker](#the-same-blocker)), even if the count fell | 1 | Reports the new blockers and the ones still open |
+| stop: `oscillation` | The pass has a new blocker (see [The same blocker](#the-same-blocker)) in a section the revision changed, even if the count fell | 1 | Reports the new blockers and the ones still open |
 | stop: `no-progress` | The open-blocker count didn't strictly decrease | 1 | Reports the open blockers |
-| converged | The pass has no open blockers and the gates pass | 0 | Reports the review as usual, with warnings and nits as comments |
+| converged | The pass has no open blockers and the gates pass | 0 | Reports the review as usual, with nits as comments |
 | stop: `decision` | An open blocker is `kind: decision` | 1 | Lists every decision blocker as a question for the user, with the options, and never picks one |
 | stop: `cap` | Pass 3 still has open blockers | 1 | Reports the open blockers |
 | continue | Only `fix` blockers are open, and there is a pass left | 3 | Hands them back (step 2 above) |
@@ -62,7 +62,9 @@ Every stop is non-convergence, and the skill stops there. It reports the reason,
 
 ## The same blocker
 
-Two blockers in consecutive passes are the same blocker when they have the same `rule` and the same `location.section`, ignoring case and runs of whitespace. Blockers are counted as a multiset: if pass 1 has two `ambiguity.weasel-word` blockers in Behavior & Edge Cases, pass 2 may have up to two there before one counts as new. `line`, `ref`, `id` and the wording are ignored, because a revision moves lines and fresh reviewers anchor and word the same problem differently. A blocker under a rule or in a section the pass before didn't have is new, and a new blocker is oscillation.
+Two blockers in consecutive passes are the same blocker when they have the same `rule` and the same `location.section`, ignoring case and runs of whitespace. Blockers are counted as a multiset: if pass 1 has two `ambiguity.weasel-word` blockers in Behavior & Edge Cases, pass 2 may have up to two there before one counts as new. `line`, `ref`, `id` and the wording are ignored, because a revision moves lines and fresh reviewers anchor and word the same problem differently. A blocker under a rule or in a section the pass before had no blocker for is new.
+
+A new blocker is oscillation only when the revision caused it. `converge` compares the spec with `--previous` section by section: the `## ` headings outside code, matched ignoring case and spacing, with each section's lines compared after dropping trailing spaces. A section that differs, or that only one of the two files has, is changed. A new blocker in a changed section, or in a section the spec doesn't have, is `oscillation`. A new blocker in a section the revision left alone was caught late. A fresh reviewer saw something an earlier one missed, or rated it differently, but the revision didn't cause it. `converge` reports it as a `note [loop.late]` line and treats it like any other open blocker: the loop goes on if open blockers still strictly fell, and stops with `no-progress` if they didn't.
 
 ## The bloat guard
 

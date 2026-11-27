@@ -36,6 +36,8 @@ EXPECTED = {
     "loop-converge-3": (0, "converged at pass 3"),
     "loop-oscillation": (1, "stop at pass 2: oscillation"),
     "loop-oscillation-fewer": (1, "stop at pass 2: oscillation"),
+    "loop-late-continue": (3, "continue to pass 3: hand 1 fix blocker to the author"),
+    "loop-late-no-progress": (1, "stop at pass 2: no-progress"),
     "loop-flat": (1, "stop at pass 2: no-progress"),
     "loop-cap": (1, "stop at pass 3: cap"),
     "loop-bloat-ceiling": (1, "stop at pass 2: bloat-ceiling"),
@@ -45,8 +47,8 @@ EXPECTED = {
     "loop-decision": (1, "stop at pass 1: decision"),
 }
 
-LINE_RE = re.compile(r"^.+:\d+: error \[loop\.[a-z-]+\] [^:]+: .+\. Fix: [A-Z].+\.$")
-STATUS_RE = re.compile(r"^.+: pass [1-3] of 3: \d+ open blockers? \(\d+ fix, \d+ decision\)(, was \d+, \d+ new)?; "
+LINE_RE = re.compile(r"^.+:\d+: (error \[loop\.[a-z-]+\]|note \[loop\.late\]) [^:]+: .+\. Fix: [A-Z].+\.$")
+STATUS_RE = re.compile(r"^.+: pass [1-3] of 3: \d+ open blockers? \(\d+ fix, \d+ decision\)(, was \d+, \d+ new \(\d+ in changed sections\))?; "
                        r"\d+ words?(, was \d+ \([+-]\d+\.\d%\))?; gates (ok|failed)$")
 VERDICT_RE = re.compile(r"^.+: (converged at pass [1-3]|continue to pass [23]: hand \d+ fix blockers? to the author|"
                         r"stop at pass [1-3]: (bloat-ceiling|bloat-growth|gate|oscillation|no-progress|decision|cap))$")
@@ -195,8 +197,41 @@ class Convergence(TempCase):
 
     def test_new_blockers_stop_even_when_the_count_falls(self):
         result = converge(fixture("loop-oscillation-fewer"))
-        self.assertIn("was 3, 1 new", result.stdout)
-        self.assertIn("architecture.adr-conflict (architecture-1, fix) is new in pass 2", result.stdout)
+        self.assertIn("was 3, 1 new (1 in changed sections)", result.stdout)
+        self.assertIn("ambiguity.untestable-ac (ambiguity-5, fix) is new in pass 2, in a section the revision changed", result.stdout)
+
+    def test_oscillation_names_only_blockers_in_changed_sections(self):
+        # Behavior & Edge Cases changed; Interfaces & Data Contracts didn't.
+        out = converge(fixture("loop-oscillation")).stdout
+        self.assertIn("error [loop.oscillation] Behavior & Edge Cases: blocker ambiguity.untestable-ac", out)
+        self.assertIn("note [loop.late] Interfaces & Data Contracts: blocker blast-radius.unmentioned-contract", out)
+        self.assertNotIn("error [loop.oscillation] Interfaces", out)
+
+    def test_a_late_blocker_in_an_unchanged_section_continues_if_blockers_fell(self):
+        result = converge(fixture("loop-late-continue"))
+        self.assertEqual(result.returncode, 3, result.stdout)
+        self.assertIn("note [loop.late] Interfaces & Data Contracts: blocker architecture.adr-conflict", result.stdout)
+        self.assertIn("was 2, 1 new (0 in changed sections)", result.stdout)
+        self.assertNotIn("error [", result.stdout)
+
+    def test_a_late_blocker_without_progress_stops(self):
+        result = converge(fixture("loop-late-no-progress"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("note [loop.late]", result.stdout)
+        self.assertIn("error [loop.no-progress]", result.stdout)
+
+    def test_the_same_late_blocker_is_oscillation_once_its_section_changes(self):
+        # loop-late-continue with the Interfaces section edited too: the new blocker is now the revision's.
+        root = self.copy("loop-late-continue")
+        rec = read_json(self.record_of(root))
+        for p in rec["passes"]:
+            p.pop("words", None)
+        write(self.record_of(root), rec)
+        with open(spec_of(root), encoding="utf-8") as f:
+            text = f.read()
+        write(spec_of(root), text.replace("- CLI: `todo archive`, no arguments.", "- CLI: `todo archive`, with no arguments."))
+        result = converge(root)
+        self.assertEqual(verdict(result), "stop at pass 2: oscillation", result.stdout)
 
     def test_a_flat_count_stops(self):
         self.assertIn("pass 2 has 2 open blockers, not fewer than pass 1's 2", converge(fixture("loop-flat")).stdout)
@@ -273,8 +308,8 @@ class Convergence(TempCase):
         write(self.record_of(root), rec)
         self.assertEqual(verdict(converge(root)), "continue to pass 2: hand 1 fix blocker to the author")
 
-    def test_warnings_and_nits_never_count(self):
-        # converge-2's last pass holds a nit and converges; continue-1 holds a warning and hands back only the 2 blockers.
+    def test_nits_never_count(self):
+        # converge-2's last pass holds a nit and converges; continue-1 holds a nit and hands back only the 2 blockers.
         self.assertEqual(converge(fixture("loop-converge-2")).returncode, 0)
         self.assertIn("hand 2 fix blockers", converge(fixture("loop-continue-1")).stdout)
 
@@ -307,6 +342,50 @@ class SameBlocker(unittest.TestCase):
     def test_the_flat_fixture_matches_moved_blockers(self):
         out = converge(fixture("loop-flat")).stdout
         self.assertIn("was 2, 0 new", out)
+
+
+class ChangedSections(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load("spec_review_converge", CONVERGE)
+
+    SPEC = "---\nid: x\n---\n\n## Goal\n\nA goal.\n\n## Behavior\n\n- **AC-1:** Given x.\n\n```\n## not a heading\n```\n"
+
+    def test_identical_specs_change_nothing(self):
+        self.assertEqual(self.m.changed_sections(self.SPEC, self.SPEC), set())
+
+    def test_an_edit_changes_only_its_section(self):
+        edited = self.SPEC.replace("A goal.", "A sharper goal.")
+        self.assertEqual(self.m.changed_sections(edited, self.SPEC), {"goal"})
+
+    def test_trailing_spaces_and_heading_case_are_ignored(self):
+        edited = self.SPEC.replace("A goal.", "A goal.   ").replace("## Behavior", "## behavior")
+        self.assertEqual(self.m.changed_sections(edited, self.SPEC), set())
+
+    def test_headings_inside_code_are_not_sections(self):
+        self.assertEqual(sorted(self.m.sections_of(self.SPEC)), ["behavior", "goal"])
+        edited = self.SPEC.replace("## not a heading", "## still not a heading")
+        self.assertEqual(self.m.changed_sections(edited, self.SPEC), {"behavior"})
+
+    def test_an_added_or_removed_section_is_changed(self):
+        added = self.SPEC + "\n## Notes\n\nMore.\n"
+        self.assertEqual(self.m.changed_sections(added, self.SPEC), {"notes"})
+        self.assertEqual(self.m.changed_sections(self.SPEC, added), {"notes"})
+
+    def test_a_blocker_in_a_section_the_spec_lacks_counts_as_changed(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        case = os.path.join(root, "c")
+        shutil.copytree(fixture("loop-late-continue"), case)
+        rec = read_json(os.path.join(case, "specs", "reviews", SLUG + ".json"))
+        rec["passes"][1]["findings"][0]["location"]["section"] = "Nowhere In This Spec"
+        write(os.path.join(case, "specs", "reviews", SLUG + ".json"), rec)
+        self.assertEqual(verdict(converge(case)), "stop at pass 2: oscillation")
+
+    def test_the_fixtures_change_only_behavior(self):
+        for case in ("loop-oscillation", "loop-late-continue"):
+            with open(spec_of(fixture(case)), encoding="utf-8") as a, open(prev_of(fixture(case)), encoding="utf-8") as b:
+                self.assertEqual(self.m.changed_sections(a.read(), b.read()), {"behavior & edge cases"})
 
 
 class Deterministic(unittest.TestCase):

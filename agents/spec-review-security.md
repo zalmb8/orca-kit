@@ -22,25 +22,40 @@ Don't read other specs, `specs/reviews/`, `.env` or other secret files, or anyth
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
 
-| Rule | Report when |
-|---|---|
-| `security.trust-boundary` | Data from outside the program's control (user input, files, the store, network responses, other users' content) reaches something that interprets it, a shell, a file path, SQL, HTML, a URL opener, a deserializer, with no stated validation or safe API. |
-| `security.data-flow` | Personal or sensitive data goes somewhere the spec doesn't state or protect: logs, error messages, the network, another user, a file with loose permissions. |
-| `security.auth-scope` | An action needs authentication or authorization the spec doesn't state, or grants broader access than the goal needs. |
-| `security.failure-mode` | A failure leaves an insecure state: fails open, leaks internals or secrets in an error, leaves partial or world-readable data. |
-| `security.policy-conflict` | The spec breaks an explicit rule in the repo's security policy. |
+| Rule | Level | Report when |
+|---|---|---|
+| `security.trust-boundary` | blocker | Data from outside the program's control (user input, files, the store, network responses, other users' content) reaches something that interprets it, a shell, a file path, SQL, HTML, a URL opener, a deserializer, with no stated validation or safe API. |
+| `security.data-flow` | blocker | Credentials, personal data, or data the spec or the security policy marks as sensitive goes somewhere the spec doesn't state or protect: logs, error messages, the network, another user. |
+| `security.auth-scope` | blocker | An action needs authentication or authorization the spec doesn't state, or grants broader access than the goal needs. |
+| `security.failure-mode` | blocker | A stated failure behavior leaves an insecure state: it fails open, leaks internals or secrets in an error, or leaves sensitive data readable by others. |
+| `security.policy-conflict` | blocker | The spec breaks an explicit rule in the repo's security policy. |
+| `security.hardening` | nit | A protection that costs nothing isn't stated (a new file's mode, owner-only permissions, an atomic write), and nothing in the spec as written is exploitable or leaks sensitive data without it. |
 
-Tiebreaks, so the same problem always gets the same rule: when the policy explicitly states the rule broken, it is `policy-conflict`; otherwise data being *interpreted* unsafely is `trust-boundary`, and data going *somewhere* it shouldn't is `data-flow`. A failure path that isn't stated at all belongs to the ambiguity reviewer; report `failure-mode` only when the stated failure behavior is insecure. Report each problem once, under one rule, at the spec line that introduces it.
+Tiebreaks, so the same problem always gets the same rule: when the policy explicitly states the rule broken, it is `policy-conflict`; otherwise data being *interpreted* unsafely is `trust-boundary`, and sensitive data going *somewhere* it shouldn't is `data-flow`. Ordinary user data in a file with the default mode is `hardening`, not `data-flow`. A failure path that isn't stated at all, or one that loses data without making anything insecure (a non-atomic write), belongs to the ambiguity reviewer; report `failure-mode` only when the stated failure behavior is insecure. Report each problem once, under one rule, at the spec line that introduces it.
 
 Don't report: vague wording or missing error states in general, architecture or convention drift, downstream consumers, the spec's size, or generic advice ("consider security") with no line in the spec behind it. Other reviewers own those.
 
-## Severity, kind and risk
+## Severity is fixed by the rule
 
-- `severity`: `blocker` when building the spec as written creates an exploitable flaw or exposes sensitive data; `warning` when it is weaker than it should be but not plainly exploitable; `nit` for hardening that costs nothing.
+Two levels, each with one action:
+
+- **`blocker`**: the spec can't be built or tested as written without someone guessing. A `fix` blocker goes back to the author; a `decision` blocker goes to the user.
+- **`nit`**: a comment. Nothing has to change.
+
+Each rule in the table above is a blocker rule or a nit rule, and a finding's `severity` is always its rule's level: you decide only *whether a rule applies*, never how bad it is. `skills/spec-review/findings` rejects a finding whose severity differs from its rule's level. When a problem looks worse or milder than its rule's level, it belongs under the other rule of the pair, if there is one, or the level stands.
+
+Worked examples:
+
+- blocker, `trust-boundary`: `todo open <id>` passes the stored link to `exec("open " + link)`, and no AC validates the link or uses a safe API.
+- blocker, `data-flow`: the spec logs the full request, including the API token, to stderr on a failed sync.
+- nit, `hardening`: `archive.json` is created with the default file mode. It holds ordinary todo titles, and nothing marks them sensitive.
+
+## Kind and risk
+
 - `kind`: `fix` when there is a clear safe way the author can write down (a safe API, validation, a scope). `decision` when the safe way changes what the user gets (drops a feature, adds a prompt, narrows who can use it): that tradeoff is the user's call, so ask it.
-- `risk`: set it on every finding that touches a risky area: `security-boundary` for `trust-boundary` and `data-flow` findings, `auth` for `auth-scope` findings, and otherwise the closest of `auth`, `security-boundary`, `data-model`, `migration`, `billing`, `public-api`, `breaking-change`. Use `null` only for a finding in none of them. A risk puts the spec in the high-risk tier, which needs a human's sign-off; it never fails the review by itself.
+- `risk`: set it on every finding that touches a risky area: `security-boundary` for `trust-boundary`, `data-flow` and `hardening` findings, `auth` for `auth-scope` findings, and otherwise the closest of `auth`, `security-boundary`, `data-model`, `migration`, `billing`, `public-api`, `breaking-change`. Use `null` only for a finding in none of them. A risk puts the spec in the high-risk tier, which needs a human's sign-off; it never fails the review by itself.
 
 ## Output
 
@@ -48,7 +63,7 @@ Return **only** a JSON array of findings: no prose before or after it, no Markdo
 
 - `id`: `"security-<n>"`, numbered from 1 in the order you report them.
 - `reviewer`: `"security"`.
-- `severity`: `"blocker"`, `"warning"` or `"nit"`.
+- `severity`: `"blocker"` or `"nit"`: exactly the level the rubric table gives the finding's `rule`.
 - `kind`: `"fix"` or `"decision"`.
 - `rule`: one key from the rubric above.
 - `location`: `{"section": <the spec's ## heading the text is under>, "line": <its 1-based line number in the spec, as the Read tool shows it, or null>, "ref": <the AC, decision or edge-case ID such as "AC-2", or null>}`. The location is always in the spec.

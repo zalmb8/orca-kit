@@ -17,13 +17,24 @@ findings.schema.json next to this script (docs/spec-review/ROADMAP.md,
 "Findings format"). Every field is required; `location.line`,
 `location.ref` and `risk` may be null.
 
+Severity is two levels, each mapped to one action (v0.5): `blocker` means
+the spec can't be built or tested as written without someone guessing (a
+`fix` goes back to the author, a `decision` to the user); `nit` is a
+comment, with no action required. The level is fixed by the rule, not
+chosen per finding: every rule key is declared a blocker rule or a nit rule
+in the rubric table of its reviewer's agent file
+(agents/spec-review-<reviewer>.md, `| `<rule>` | <blocker|nit> | ... |`),
+which is the one rule table this script, the agents and the tests read. A
+finding whose rule isn't in that table, or whose severity isn't its rule's
+level, is rejected.
+
 Prints one line per rejected finding problem:
   <file>:<line>: error [<rule>] finding #<n> (<id>): <problem>. Fix: <what to do>.
 where <n> counts findings from 1 and <line> is the line of the offending
 field in the file. Then one summary line per file, counting only the
 findings that passed:
-  <file>: ok, <n> findings: <b> blocker (<d> decision), <w> warning, <k> nit
-  <file>: <r> rejected, <n> kept: <b> blocker (<d> decision), <w> warning, <k> nit
+  <file>: ok, <n> findings: <b> blocker (<d> decision), <k> nit
+  <file>: <r> rejected, <n> kept: <b> blocker (<d> decision), <k> nit
 
 A rejected finding is dropped, never repaired or guessed at.
 
@@ -37,20 +48,22 @@ used by a finding in an earlier file is rejected under finding.id. Two
 findings are duplicates when they have the same rule, the same location (the
 section, ignoring case and runs of whitespace; the same line, or both null;
 the same ref, ignoring case, or both null) and the same risk, so a merge never
-drops a risk. Of each set of duplicates the most severe is kept (blocker,
-then warning, then nit), then a decision over a fix, then the first given;
+drops a risk. Of each set of duplicates a decision is kept over a fix,
+then the first given (duplicates share a rule, so they share a severity);
 it takes the place of the first of the set. Each dropped duplicate is
 reported on stderr as
   <file>:<line>: note [merge.duplicate] finding #<n> (<id>): same rule and location as <id> in <file>, dropped.
 then one line:
-  merged: <n> findings from <f> files: <b> blocker (<d> decision), <w> warning, <k> nit; <u> duplicates dropped, <r> rejected
+  merged: <n> findings from <f> files: <b> blocker (<d> decision), <k> nit; <u> duplicates dropped, <r> rejected
 The exit code is the worst of the files' (0, 1 or 2), or 1 for an id clash;
 stdout is always a valid findings array.
 
 Python 3 standard library only; no install step.
 """
 
+import glob
 import json
+import os
 import re
 import sys
 
@@ -59,7 +72,7 @@ import sys
 # Schema; tests/test_findings.py checks that the two agree.
 # ---------------------------------------------------------------------------
 
-SEVERITIES = ("blocker", "warning", "nit")
+SEVERITIES = ("blocker", "nit")
 KINDS = ("fix", "decision")
 RISKS = ("auth", "security-boundary", "data-model", "migration", "billing", "public-api", "breaking-change")
 FIELDS = ("id", "reviewer", "severity", "kind", "rule", "location", "evidence",
@@ -75,9 +88,9 @@ RULE_TEXT = {
     "finding.fields": "no fields other than " + ", ".join(FIELDS),
     "finding.id": "id is lowercase letters, digits, '.' and '-', and unique in the file",
     "finding.reviewer": "reviewer is a lowercase, hyphenated name",
-    "finding.severity": "severity is " + " | ".join(SEVERITIES),
+    "finding.severity": "severity is " + " | ".join(SEVERITIES) + ", and equals the level the rule table declares for its rule",
     "finding.kind": "kind is " + " | ".join(KINDS),
-    "finding.rule": "rule is '<reviewer>.<key>', a stable lowercase key",
+    "finding.rule": "rule is '<reviewer>.<key>', a key in the rubric table of agents/spec-review-<reviewer>.md",
     "finding.location": "location is an object with section (text), line (integer >= 1 or null) and ref (text or null)",
     "finding.evidence": "evidence is non-empty text",
     "finding.concrete-question": "concrete_question is non-empty text ending in '?'",
@@ -90,7 +103,7 @@ RULE_TEXT = {
 MISSING_FIX = {
     "id": "add an id unique in the file, such as \"ambiguity-3\"",
     "reviewer": "add the reviewer's name, such as \"ambiguity\"",
-    "severity": "add severity: blocker, warning or nit",
+    "severity": "add severity: blocker or nit, the level the rule table gives its rule",
     "kind": "add kind: fix or decision",
     "rule": "add the rubric's rule key, such as \"ambiguity.weasel-word\"",
     "location": "add location: {\"section\": ..., \"line\": ..., \"ref\": ...}, with null for an unknown line or ref",
@@ -99,6 +112,66 @@ MISSING_FIX = {
     "suggested_fix": "add suggested_fix: what to change in the spec",
     "risk": "add risk: null, or the risk area the finding touches",
 }
+
+
+# ---------------------------------------------------------------------------
+# The rule table: each reviewer agent's rubric declares every rule key as a
+# blocker rule or a nit rule. This is the only place levels are written down.
+# ---------------------------------------------------------------------------
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+AGENTS_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "agents"))
+RUBRIC_HEADER_RE = re.compile(r"^\| Rule \| Level \| Report when \|$", re.M)
+RUBRIC_ROW_RE = re.compile(r"^\| `([a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*)` \| (blocker|nit) \| .+ \|$")
+
+
+class RuleTableError(Exception):
+    pass
+
+
+def read_rule_table(agents_dir=AGENTS_DIR):
+    """{rule: level} from every agents/spec-review-*.md rubric. Raises RuleTableError."""
+    table = {}
+    paths = sorted(glob.glob(os.path.join(agents_dir, "spec-review-*.md")))
+    if not paths:
+        raise RuleTableError("no reviewer agent files (spec-review-*.md) in %s" % agents_dir)
+    for path in paths:
+        reviewer = os.path.basename(path)[len("spec-review-"):-len(".md")]
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            raise RuleTableError("can't read %s (%s)" % (path, e))
+        m = re.search(r"^## Rubric\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+        if not m or not RUBRIC_HEADER_RE.search(m.group(1)):
+            raise RuleTableError("%s has no `| Rule | Level | Report when |` table under ## Rubric" % path)
+        rows = 0
+        for line in m.group(1).split("\n"):
+            if not line.startswith("| `"):
+                continue
+            row = RUBRIC_ROW_RE.match(line)
+            if not row:
+                raise RuleTableError("%s: rubric row %r isn't `| `<rule>` | blocker or nit | <when> |`" % (path, line[:60]))
+            rule, level = row.groups()
+            if not rule.startswith(reviewer + "."):
+                raise RuleTableError("%s: rule %s isn't prefixed with %s." % (path, rule, reviewer))
+            if rule in table:
+                raise RuleTableError("%s: rule %s is listed twice" % (path, rule))
+            table[rule] = level
+            rows += 1
+        if not rows:
+            raise RuleTableError("%s: the rubric table has no rules" % path)
+    return table
+
+
+_RULE_TABLE = None
+
+
+def rule_table():
+    global _RULE_TABLE
+    if _RULE_TABLE is None:
+        _RULE_TABLE = read_rule_table()
+    return _RULE_TABLE
 
 
 def rule_of(field):
@@ -190,7 +263,7 @@ def check_finding(finding, text, start, end):
             "use the reviewer's lowercase, hyphenated name, such as \"ambiguity\"")
     if has("severity") and finding["severity"] not in SEVERITIES:
         bad("severity", "finding.severity", "severity is %s, not one of %s" % (show(finding["severity"]), ", ".join(SEVERITIES)),
-            "use blocker, warning or nit")
+            "use blocker or nit, as the rule decides" + ("; warning is no longer a severity" if finding["severity"] == "warning" else ""))
     if has("kind") and finding["kind"] not in KINDS:
         bad("kind", "finding.kind", "kind is %s, not one of %s" % (show(finding["kind"]), ", ".join(KINDS)),
             "use fix if the author can resolve it from the spec and repo, or decision if it needs the user")
@@ -203,6 +276,15 @@ def check_finding(finding, text, start, end):
         elif isinstance(reviewer, str) and REVIEWER_RE.match(reviewer) and not rule.startswith(reviewer + "."):
             bad("rule", "finding.rule", "rule %s doesn't start with the reviewer %s" % (show(rule), show(reviewer + ".")),
                 "prefix the rubric's key with the reviewer's name")
+        elif rule not in rule_table():
+            prefix = rule.split(".")[0] + "."
+            known = sorted(r for r in rule_table() if r.startswith(prefix))
+            bad("rule", "finding.rule", "rule %s isn't in the rule table" % show(rule),
+                ("use one of " + ", ".join(known)) if known else "use a rule from a reviewer agent's rubric table")
+        elif has("severity") and finding["severity"] in SEVERITIES and finding["severity"] != rule_table()[rule]:
+            level = rule_table()[rule]
+            bad("severity", "finding.severity", "severity is %s, but %s is a %s rule" % (show(finding["severity"]), rule, level),
+                "set severity to %s; the rule fixes the level, a finding never chooses it" % level)
     if has("location"):
         loc = finding["location"]
         if not isinstance(loc, dict):
@@ -298,7 +380,7 @@ def check_file_kept(path):
 def tally_of(findings):
     count = dict((s, sum(1 for f in findings if f["severity"] == s)) for s in SEVERITIES)
     decisions = sum(1 for f in findings if f["severity"] == "blocker" and f["kind"] == "decision")
-    return "%d blocker (%d decision), %d warning, %d nit" % (count["blocker"], decisions, count["warning"], count["nit"])
+    return "%d blocker (%d decision), %d nit" % (count["blocker"], decisions, count["nit"])
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +388,8 @@ def tally_of(findings):
 # ---------------------------------------------------------------------------
 
 MERGE_RULE_TEXT = {
-    "merge.duplicate": "note: same rule, location (section, line, ref) and risk as a kept finding; the most severe, "
-                       "then a decision, then the first is kept",
+    "merge.duplicate": "note: same rule, location (section, line, ref) and risk as a kept finding; a decision, "
+                       "then the first is kept",
 }
 
 
@@ -410,12 +492,20 @@ def main(argv=None):
     if opts["mode"] == "help":
         sys.stdout.write(__doc__.lstrip())
         return 0
+    try:
+        rule_table()
+    except RuleTableError as e:
+        sys.stderr.write("findings: can't read the rule table: %s\n" % e)
+        return 2
     if opts["mode"] == "rules":
         for rule_id, text in RULE_TEXT.items():
             print("  %-26s error   %s" % (rule_id, text))
         print("with --merge:")
         for rule_id, text in MERGE_RULE_TEXT.items():
             print("  %-26s note    %s" % (rule_id, text[len("note: "):]))
+        print("rule table (agents/spec-review-*.md):")
+        for rule, level in sorted(rule_table().items()):
+            print("  %-34s %s" % (rule, level))
         return 0
     if opts["mode"] == "merge":
         code, kept, lines = merge(opts["paths"])

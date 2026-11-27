@@ -23,23 +23,39 @@ Use Glob and Grep to find these; don't read other specs, `specs/reviews/`, tests
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
 
-| Rule | Report when |
-|---|---|
-| `architecture.adr-conflict` | The spec asks for something an ADR (status accepted, not superseded) decides against, without superseding that ADR. |
-| `architecture.steering-conflict` | The spec contradicts a rule in `CLAUDE.md` or `AGENTS.md`: layout, conventions, dependencies, commands. |
-| `architecture.codebase-drift` | The spec goes against a constraint only the code shows (a single access path, a layering, an invariant a module enforces), with no ADR or steering rule stating it. |
-| `architecture.existing-mismatch` | An `Existing:` item names a path or symbol that doesn't exist, or says it does something it doesn't. |
-| `architecture.duplicate-capability` | The spec builds something the codebase already provides (a helper, a module, a command) instead of using it. |
+| Rule | Level | Report when |
+|---|---|---|
+| `architecture.adr-conflict` | blocker | The spec asks for something an ADR (status accepted, not superseded) decides against, without superseding that ADR. |
+| `architecture.steering-conflict` | blocker | The spec contradicts a rule in `CLAUDE.md` or `AGENTS.md`: layout, conventions, dependencies, commands. |
+| `architecture.codebase-drift` | blocker | The spec goes against a constraint only the code shows (a single access path, a layering, an invariant a module enforces), with no ADR or steering rule stating it. |
+| `architecture.existing-mismatch` | blocker | An `Existing:` item names a path or symbol that doesn't exist, or says it does something it doesn't, and the spec's behavior relies on that. |
+| `architecture.list-placement` | nit | An item names the right path or symbol but sits in the wrong list or describes it loosely: a planned change written under `Existing:` as if the code already did it, or an existing helper listed under `New:`. Nothing the behavior relies on is wrong. |
+| `architecture.duplicate-capability` | nit | The spec builds something the codebase already provides (a helper, a module, a command) instead of using it, and no ADR or steering rule requires using it. |
 
-Tiebreaks, so the same problem always gets the same rule: when an ADR states the constraint, it is `adr-conflict`; else when a steering file states it, `steering-conflict`; only a constraint written nowhere but the code is `codebase-drift`. A spec's own Decision Log entry that goes against an ADR is still `adr-conflict`. Report each problem once, under one rule, at the spec line that asks for the conflicting thing.
+Tiebreaks, so the same problem always gets the same rule: when an ADR states the constraint, it is `adr-conflict`; else when a steering file states it, `steering-conflict`; only a constraint written nowhere but the code is `codebase-drift`. Rebuilding something an ADR says to use (such as the store's only read and write path) is `adr-conflict`, not `duplicate-capability`. A spec's own Decision Log entry that goes against an ADR is still `adr-conflict`. An `Existing:` item whose path is real but whose description is the planned change is `list-placement`; one whose path or symbol doesn't exist is `existing-mismatch`. Report each problem once, under one rule, at the spec line that asks for the conflicting thing.
 
 Don't report: vague wording, missing error states or untestable ACs; security; consumers of contracts outside the files above; the spec's size; format problems the spec checker enforces. Other reviewers own those.
 
-## Severity, kind and risk
+## Severity is fixed by the rule
 
-- `severity`: `blocker` when building the spec as written would break an accepted decision or a real invariant of the code; `warning` when it fits badly but works (a duplicate helper, a mismatched `Existing:` description); `nit` for a small convention slip.
+Two levels, each with one action:
+
+- **`blocker`**: the spec can't be built or tested as written without someone guessing. A `fix` blocker goes back to the author; a `decision` blocker goes to the user.
+- **`nit`**: a comment. Nothing has to change.
+
+Each rule in the table above is a blocker rule or a nit rule, and a finding's `severity` is always its rule's level: you decide only *whether a rule applies*, never how bad it is. `skills/spec-review/findings` rejects a finding whose severity differs from its rule's level. When a problem looks worse or milder than its rule's level, it belongs under the other rule of the pair, if there is one, or the level stands.
+
+Worked examples:
+
+- blocker, `adr-conflict`: the spec has a command write `~/.todos.json` with its own `writeFileSync`, and ADR 0001 says only `src/store.ts` writes the store.
+- blocker, `existing-mismatch`: `Existing:` lists `src/store.ts` (`openStore()`), and there is no `openStore`.
+- nit, `list-placement`: `Existing:` says "`src/commands/add.ts` (`add()`): now takes the highest ID across the store and the archive", which is the planned change, not what `add()` does today.
+- nit, `duplicate-capability`: the spec adds a `formatDate()` helper when `src/util/date.ts` already exports one, and no rule says to reuse it.
+
+## Kind and risk
+
 - `kind`: `fix` when the ADR, steering file or code shows the right way and the spec can simply follow it. `decision` when following it would change what the user asked for, or the right move is to supersede the ADR: that is the user's call, so ask it.
 - `risk`: `null`, unless the drift is in a risky area: `data-model` (the shape or storage of persisted data), `migration` (converting stored data), `auth`, `security-boundary`, `billing`, `public-api` or `breaking-change`.
 
@@ -49,7 +65,7 @@ Return **only** a JSON array of findings: no prose before or after it, no Markdo
 
 - `id`: `"architecture-<n>"`, numbered from 1 in the order you report them.
 - `reviewer`: `"architecture"`.
-- `severity`: `"blocker"`, `"warning"` or `"nit"`.
+- `severity`: `"blocker"` or `"nit"`: exactly the level the rubric table gives the finding's `rule`.
 - `kind`: `"fix"` or `"decision"`.
 - `rule`: one key from the rubric above.
 - `location`: `{"section": <the spec's ## heading the text is under>, "line": <its 1-based line number in the spec, as the Read tool shows it, or null>, "ref": <the AC, decision or edge-case ID such as "D-1", or null>}`. The location is always in the spec, never in the code.

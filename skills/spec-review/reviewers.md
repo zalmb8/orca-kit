@@ -1,20 +1,29 @@
 # The advisory reviewers
 
-Reference for the advisory review (v0.4). SKILL.md says when and how to run it; this file lists the reviewers, their rule keys, how their findings are merged and deduplicated, how they are recorded, and the seeded examples.
+Reference for the advisory review (v0.4; severity levels v0.5). SKILL.md says when and how to run it; this file lists the reviewers, their rule keys, how their findings are merged and deduplicated, how they are recorded, and the seeded examples.
 
 ## The five reviewers
 
 Each is a plugin agent in `${CLAUDE_PLUGIN_ROOT}/agents/`, invoked as `orca-kit:<agent>`. Each has one rubric, read-only tools and a fixed context. It gets only the spec path and the repo root (the slicer also gets its counts line) and returns only a JSON array in the findings format.
 
-| Agent | Tools | Context it reads | Rule keys |
-|---|---|---|---|
-| `spec-review-ambiguity` | Read | The spec only | `ambiguity.weasel-word`, `ambiguity.missing-error-state`, `ambiguity.untestable-ac`, `ambiguity.needs-table`, `ambiguity.two-readings` |
-| `spec-review-architecture` | Read, Grep, Glob | The spec, `CLAUDE.md` / `AGENTS.md`, ADRs (`docs/adr/`, …), the files under `Existing:` | `architecture.adr-conflict`, `architecture.steering-conflict`, `architecture.codebase-drift`, `architecture.existing-mismatch`, `architecture.duplicate-capability` |
-| `spec-review-security` | Read, Grep, Glob | The spec, `SECURITY.md` and other security policy files, the auth and data code the spec touches | `security.trust-boundary`, `security.data-flow`, `security.auth-scope`, `security.failure-mode`, `security.policy-conflict` |
-| `spec-review-blast-radius` | Read, Grep, Glob | The spec, and a repo search for the readers and writers of every contract it changes | `blast-radius.unmentioned-contract`, `blast-radius.incompatible-change` |
-| `spec-review-slicer` | Read | The spec and the `gate --counts` line | `slicer.oversized`, `slicer.independent-parts` |
+| Agent | Tools | Context it reads | Blocker rules | Nit rules |
+|---|---|---|---|---|
+| `spec-review-ambiguity` | Read | The spec only | `ambiguity.weasel-word`, `ambiguity.missing-error-state`, `ambiguity.untestable-ac`, `ambiguity.two-readings` | `ambiguity.vague-prose`, `ambiguity.needs-table`, `ambiguity.unstated-detail`, `ambiguity.compound-failure` |
+| `spec-review-architecture` | Read, Grep, Glob | The spec, `CLAUDE.md` / `AGENTS.md`, ADRs (`docs/adr/`, …), the files under `Existing:` | `architecture.adr-conflict`, `architecture.steering-conflict`, `architecture.codebase-drift`, `architecture.existing-mismatch` | `architecture.list-placement`, `architecture.duplicate-capability` |
+| `spec-review-security` | Read, Grep, Glob | The spec, `SECURITY.md` and other security policy files, the auth and data code the spec touches | `security.trust-boundary`, `security.data-flow`, `security.auth-scope`, `security.failure-mode`, `security.policy-conflict` | `security.hardening` |
+| `spec-review-blast-radius` | Read, Grep, Glob | The spec, and a repo search for the readers and writers of every contract it changes | `blast-radius.unmentioned-contract`, `blast-radius.incompatible-change` | `blast-radius.stale-reference` |
+| `spec-review-slicer` | Read | The spec and the `gate --counts` line | `slicer.oversized` | `slicer.independent-parts` |
 
-Each agent file says when its findings are a `blocker`, `warning` or `nit`, when they are a `decision` rather than a `fix`, and when they set a `risk`. Rule keys are stable: renaming one splits its graduation count (v0.7), so a rename is a deliberate change with a Decision log row. A test keeps this table, the agent files and `examples/expected.json` in step.
+## Severity is fixed by the rule
+
+Severity has two levels, each mapped to one action:
+
+- **`blocker`**: the spec can't be built or tested as written without someone guessing. A `kind: fix` blocker goes back to the author through the revision loop (`loop.md`); a `kind: decision` blocker goes to the user.
+- **`nit`**: a comment. Nothing has to change.
+
+Each agent's `## Rubric` table, `| Rule | Level | Report when |`, declares every rule a blocker rule or a nit rule. That table is the only rule table: the agent reads it as its rubric, and `findings` reads the same rows from `agents/spec-review-*.md`. It rejects a finding whose `rule` isn't in it (`finding.rule`), or whose `severity` isn't its rule's level (`finding.severity`). `findings --rules` prints the table. A reviewer decides only whether a rule applies, never how bad the problem is. A problem that is sometimes serious and sometimes not is split into two rules, such as `ambiguity.weasel-word` (blocker, in an AC) and `ambiguity.vague-prose` (nit, in context prose).
+
+Each agent file says when a rule applies, with worked examples for both levels, when a finding is a `decision` rather than a `fix`, and when it sets a `risk`. Rule keys are stable: renaming one splits its graduation count (v0.7), so a rename is a deliberate change with a Decision log row. A test keeps this table, the agent files and `examples/expected.json` in step.
 
 ## Invoking a reviewer
 
@@ -35,8 +44,8 @@ Save each reply, as returned, to its own file outside the repo (for example `$TM
 
 - **Dropped and reported.** A rejected finding, every finding of a file that isn't a JSON array, and a finding whose `id` an earlier file already used are dropped, each with its line on stderr. The merge goes on with the rest.
 - **Duplicates.** Two findings are duplicates when they have the same `rule` and the same location: `section` equal ignoring case and runs of whitespace, `line` equal (or both `null`), `ref` equal ignoring case (or both `null`), and the same `risk`. Including `risk` means a merge never drops the finding that raises the tier.
-- **Which is kept.** The most severe (blocker, then warning, then nit), then a `decision` over a `fix`, then the first given. It takes the place of the first of its set, so the order stays stable. Each dropped duplicate is a `note [merge.duplicate]` line on stderr. Findings are never edited.
-- **Result line.** `merged: <n> findings from <f> files: <b> blocker (<d> decision), <w> warning, <k> nit; <u> duplicates dropped, <r> rejected`.
+- **Which is kept.** A `decision` over a `fix`, then the first given. Duplicates share a rule, so they share a severity. It takes the place of the first of its set, so the order stays stable. Each dropped duplicate is a `note [merge.duplicate]` line on stderr. Findings are never edited.
+- **Result line.** `merged: <n> findings from <f> files: <b> blocker (<d> decision), <k> nit; <u> duplicates dropped, <r> rejected`.
 - **Exit.** The worst of the files' codes (0, 1 or 2), or 1 for an id clash. stdout is always a valid findings array, so it can be passed straight to `gate --risk --findings`.
 
 Two different rules at the same spot are not duplicates: they are two problems, each owned by one rubric. The merge is deterministic, and its tests are in `tests/test_reviewers.py`.

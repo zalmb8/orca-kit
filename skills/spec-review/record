@@ -34,7 +34,7 @@ Prints one line per problem:
 then one summary line per file:
   <file>: ok, risk high (migration), signed off by <name> on <date>
   <file>: ok, risk low, no sign-off
-  <file>: ok, risk low, no sign-off, 1 pass: 3 findings: 1 blocker (0 decision), 1 warning, 1 nit
+  <file>: ok, risk low, no sign-off, 1 pass: 3 findings: 1 blocker (0 decision), 2 nit
   <file>: <n> problem(s)
 
 This script only reads records. It never writes one, and never fills in a
