@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zalmb8/orca-kit/skills/spec-review/findings.schema.json",
+  "title": "orca-kit:spec-review findings",
+  "description": "A reviewer's output: a JSON array of typed findings. The findings script validates this by hand (stdlib only) and must agree with this file.",
+  "type": "array",
+  "items": { "$ref": "#/$defs/finding" },
+  "$defs": {
+    "text": { "type": "string", "pattern": "\\S" },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reviewer", "severity", "kind", "rule", "location", "evidence", "concrete_question", "suggested_fix", "risk"],
+      "properties": {
+        "id": {
+          "description": "Unique within the file, e.g. ambiguity-3.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9.-]*$"
+        },
+        "reviewer": {
+          "description": "The reviewer that raised it, e.g. ambiguity.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "severity": { "enum": ["blocker", "warning", "nit"] },
+        "kind": {
+          "description": "fix: the author can resolve it from the spec and repo. decision: needs the user.",
+          "enum": ["fix", "decision"]
+        },
+        "rule": {
+          "description": "A stable key per reviewer rubric, '<reviewer>.<key>'; the findings script also checks the prefix equals reviewer.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*(\\.[a-z0-9]+(-[a-z0-9]+)*)+$"
+        },
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["section", "line", "ref"],
+          "properties": {
+            "section": { "$ref": "#/$defs/text" },
+            "line": { "type": ["integer", "null"], "minimum": 1 },
+            "ref": { "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] }
+          }
+        },
+        "evidence": { "$ref": "#/$defs/text" },
+        "concrete_question": { "type": "string", "pattern": "\\S[\\s\\S]*\\?\\s*$" },
+        "suggested_fix": { "$ref": "#/$defs/text" },
+        "risk": {
+          "enum": [null, "auth", "security-boundary", "data-model", "migration", "billing", "public-api", "breaking-change"]
+        }
+      }
+    }
+  }
+}
