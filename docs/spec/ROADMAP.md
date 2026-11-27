@@ -74,12 +74,12 @@ Fields for `done` and `superseded` (for example the verification fields and `sup
 
 Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version` with each one.
 
-### v0.1: Skeleton and templates
-- `skills/spec/SKILL.md` with a description that triggers on the capture, refine and update phrases.
-- `skills/spec/template-idea.md`: frontmatter, Goal, Context and Open Questions.
-- `skills/spec/template-spec.md`: frontmatter and the six sections.
-- The status rules documented in SKILL.md.
-- **Done when:** the skill loads as `orca-kit:spec` and can write a correctly formatted `idea` file.
+### v0.1: Skeleton and templates ✅
+- [x] `skills/spec/SKILL.md` with a description that triggers on the capture, refine and update phrases.
+- [x] `skills/spec/template-idea.md`: frontmatter, Goal, Context and Open Questions.
+- [x] `skills/spec/template-spec.md`: frontmatter and the six sections.
+- [x] The status rules documented in SKILL.md.
+- [x] **Done when:** the skill loads as `orca-kit:spec` and can write a correctly formatted `idea` file.
 
 ### v0.2: Capture and refine modes
 - Capture writes an `idea` from the conversation with no questions asked.
@@ -125,3 +125,5 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | Only the user can accept a spec | Acceptance is a human decision. The skill records who accepted it and when. |
 | Verification and `done` are out of scope | Keeps this skill focused. A separate verification skill will own the check and its report. |
 | One skill with three modes | The modes share the template, the status rules and the checker. |
+| Section headings in `template-spec.md` are the bare names from the six-sections table (`## Goal & Non-Goals`, …), with no numbers | Exact, predictable headings let agents find a section by name. |
+| `template-spec.md` starts at `status: draft`; `template-idea.md` at `status: idea` | Each template matches the status of the mode that first writes it. |
