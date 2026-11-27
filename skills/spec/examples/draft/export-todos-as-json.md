@@ -47,13 +47,30 @@ New contract:
 
 - CLI: `todo export`, no arguments or flags.
 - Output: a JSON array of `Todo` objects on stdout, with each todo's fields exactly as `Todo` defines them, followed by a newline. Nothing else is written to stdout.
+- Tests: `test/commands/export.test.ts`, with one test per acceptance criterion, each named starting with its ID (`AC-1: …`).
 
 ## Behavior & Edge Cases
 
-- Happy path: `todo export` loads every todo with `loadTodos()`, open and completed alike, prints them as a JSON array, and exits 0.
-- If the store can't be read, print the error to stderr, write nothing to stdout, and exit non-zero, as `todo list` does.
-- Fields added to `Todo` later appear in the export automatically.
-- TBD: what should exporting an empty todo list produce (`[]`, or nothing)?
+- **AC-1:** Given the store holds open and completed todos, when the user runs `todo export`, then stdout is a JSON array of every todo, open and completed, followed by a newline, and the command exits 0.
+  verify: `npm test -- test/commands/export.test.ts -t "AC-1:"`
+- **AC-2:** Given a todo with every field the `Todo` type defines, when the user runs `todo export`, then that todo's JSON object has exactly those fields and values, so fields added to `Todo` later appear without changes to the command.
+  verify: `npm test -- test/commands/export.test.ts -t "AC-2:"`
+- **AC-3:** Given any argument or flag (for example `todo export --csv`), when the user runs it, then the usage error is printed to stderr as `src/cli.ts` does for other commands, nothing is written to stdout, and the command exits non-zero.
+  verify: `npm test -- test/commands/export.test.ts -t "AC-3:"`
+- **AC-4:** Given `loadTodos()` throws because the store can't be read or parsed, when the user runs `todo export`, then the error is printed to stderr, nothing is written to stdout, and the command exits non-zero, as `todo list` does.
+  verify: `npm test -- test/commands/export.test.ts -t "AC-4:"`
+- **AC-5:** Given the store holds no todos, when the user runs `todo export`, then TBD: it prints `[]`, or nothing?
+  verify: `npm test -- test/commands/export.test.ts -t "AC-5:"`
+- **AC-6:** Given another `todo` command saves the store while `todo export` reads it, when the export finishes, then its output comes from one `loadTodos()` call: either a complete JSON array or the AC-4 error, never a partial array.
+  TBD: the repo has no test harness for concurrent processes; how should this be checked?
+
+| Input or condition | Expected behavior | AC |
+|---|---|---|
+| Invalid input: an argument or flag, such as `todo export --csv` | Usage error on stderr, nothing on stdout, non-zero exit | AC-3 |
+| Failure: the store file can't be read (permissions, IO error) | Error on stderr, nothing on stdout, non-zero exit | AC-4 |
+| Failure: the store file isn't valid JSON | Same as an unreadable store | AC-4 |
+| Empty: no todos in the store | TBD: `[]`, or nothing? | AC-5 |
+| State conflict: another `todo` command saves the store during the export | One complete array or the AC-4 error, never a partial array | AC-6 |
 
 ## Boundaries & Decision Log
 
@@ -64,5 +81,17 @@ New contract:
 
 ## Verification Gate
 
-- `npm run lint`, `npm run typecheck` and `npm test` pass, as in CI.
-- New tests for `todo export`, next to `test/commands/list.test.ts`, cover open and completed todos, the JSON shape, and a store read failure.
+Per acceptance criterion:
+
+- AC-1: `npm test -- test/commands/export.test.ts -t "AC-1:"`
+- AC-2: `npm test -- test/commands/export.test.ts -t "AC-2:"`
+- AC-3: `npm test -- test/commands/export.test.ts -t "AC-3:"`
+- AC-4: `npm test -- test/commands/export.test.ts -t "AC-4:"`
+- AC-5: `npm test -- test/commands/export.test.ts -t "AC-5:"`
+- AC-6: TBD: the repo has no test harness for concurrent processes; how should this be checked?
+
+Whole suite, from Environment & Commands:
+
+- `npm run lint`
+- `npm run typecheck`
+- `npm test`
