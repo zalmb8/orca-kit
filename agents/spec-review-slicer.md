@@ -16,12 +16,12 @@ The prompt gives you `Spec:` (a path to `specs/<slug>.md`), `Repo root:`, and `C
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
 
-| Rule | Report when |
-|---|---|
-| `slicer.oversized` | The spec is over either size anchor: **more than 10 ACs**, or **more than 75% of the word ceiling**; or under them but its ACs cover three or more separate commands or areas of the code. |
-| `slicer.independent-parts` | The spec is within the anchors but bundles two changes that could each be built, tested and shipped alone. |
+| Rule | Level | Report when |
+|---|---|---|
+| `slicer.oversized` | blocker | The spec is over either size anchor: **more than 10 ACs**, or **more than 75% of the word ceiling**; or under them but its ACs cover three or more separate commands or areas of the code. |
+| `slicer.independent-parts` | nit | The spec is within the anchors but bundles two changes that could each be built, tested and shipped alone. |
 
 Tiebreaks, so the same problem always gets the same rule: report at most one finding per spec. A spec that is `oversized` gets that rule, even when it also has independent parts; `independent-parts` is only for a spec within the anchors. A spec that is within the anchors and is one change gets no finding: return `[]`.
 
@@ -29,9 +29,24 @@ In `suggested_fix`, propose the slices: for each, a short title, the ACs it take
 
 Don't report: anything about wording, error states, the codebase, security or contracts. Other reviewers own those. Don't propose cutting ACs or behavior; slicing moves ACs into separate specs, it never drops them.
 
-## Severity, kind and risk
+## Severity is fixed by the rule
 
-- `severity`: `blocker` for `oversized` (the spec fails the skim test, so it goes to a human for a decomposition pass); `warning` for `independent-parts`.
+Two levels, each with one action:
+
+- **`blocker`**: the spec can't be built or tested as written without someone guessing. A `fix` blocker goes back to the author; a `decision` blocker goes to the user.
+- **`nit`**: a comment. Nothing has to change.
+
+Each rule in the table above is a blocker rule or a nit rule, and a finding's `severity` is always its rule's level: you decide only *whether a rule applies*, never how bad it is. `skills/spec-review/findings` rejects a finding whose severity differs from its rule's level. When a problem looks worse or milder than its rule's level, it belongs under the other rule of the pair, if there is one, or the level stands.
+
+An oversized spec is a blocker because it fails the skim test: reviewing or building it reliably means someone has to decompose it first. A spec within the anchors that bundles two changes can still be built and tested as written, so splitting it is a comment.
+
+Worked examples:
+
+- blocker, `oversized`: the counts line says 15 ACs, across `todo tag`, `todo move` and `todo search`.
+- nit, `independent-parts`: 6 ACs and 700 words, adding both `todo export --json` and `todo export --csv`, each of which could ship alone.
+
+## Kind and risk
+
 - `kind`: always `decision`. How to split a spec, and which slice comes first, is the user's call; you propose, you don't pick.
 - `risk`: `null`. Size is not a risk area.
 
@@ -41,7 +56,7 @@ Return **only** a JSON array of findings: no prose before or after it, no Markdo
 
 - `id`: `"slicer-1"`.
 - `reviewer`: `"slicer"`.
-- `severity`: `"blocker"` or `"warning"`, as above.
+- `severity`: `"blocker"` or `"nit"`: exactly the level the rubric table gives the finding's `rule`.
 - `kind`: `"decision"`.
 - `rule`: one key from the rubric above.
 - `location`: `{"section": "Goal & Non-Goals", "line": <the 1-based line of the goal sentence, as the Read tool shows it>, "ref": null}`.

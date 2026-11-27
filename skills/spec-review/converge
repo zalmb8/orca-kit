@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""Decide the next step of the orca-kit:spec-review revision loop.
+
+Usage:
+  converge [--repo ROOT] [--record FILE] [--previous PREV.md] <spec.md>
+  converge --rules
+
+  --repo ROOT     As for gate: where .orca-kit/spec-review.yml is read from.
+                  Defaults to the nearest directory at or above the spec with
+                  .orca-kit/ or .git.
+  --record FILE   The review record. Defaults to specs/reviews/<slug>.json
+                  next to the spec.
+  --previous P    The spec as it was before the author's last revision: the
+                  copy the skill saved before handing the blockers back.
+                  Required from pass 2 on, and not allowed on pass 1.
+  --rules         List the stop reasons, and exit.
+
+The loop (docs/spec-review/ROADMAP.md, v0.5, and loop.md next to this
+script): the record's `passes` hold one entry per review pass, the last one
+being the review of <spec.md> as it is now. This script reads the record,
+re-runs the hard gates on the spec, counts its words, and prints one verdict:
+
+  converged   the last pass has no open blockers and the gates pass
+  continue    the last pass has only `fix` blockers, fewer than before, and
+              there is a pass left: hand those blockers to the author
+  stop        anything else, with one reason, checked in this order:
+    bloat-ceiling  the revision put the spec over max_words
+    bloat-growth   the revision grew the spec by more than max_growth
+    gate           a hard gate fails on the spec
+    oscillation    the pass has a new blocker in a section the revision changed
+    no-progress    open blockers didn't strictly decrease
+    decision       an open blocker is `kind: decision`, for the user
+    cap            pass 3 still has open blockers
+
+Two blockers are the same blocker across passes when they have the same
+`rule` and the same `location.section` (ignoring case and runs of
+whitespace), counted as a multiset; line, ref and wording are ignored,
+because a revision moves lines and fresh reviewers word and anchor the same
+problem differently. A blocker is new when the pass before had no blocker
+with its rule and section. A new blocker is oscillation only when the
+revision caused it: its section's text differs between --previous and the
+spec (sections are the `## ` headings outside code, compared by heading,
+ignoring case and runs of whitespace, and by their lines with trailing
+spaces dropped; a section missing from either file counts as changed). A new
+blocker in a section the revision didn't touch was caught late: it is
+reported as a `note [loop.late]` line, and the loop goes on if open blockers
+still strictly fell (otherwise it stops with no-progress). The bloat checks
+and the section comparison need --previous, so they run from pass 2 on;
+growth is (words - previous words) / previous words.
+
+Prints, in the gate's format, one line per problem behind a stop:
+  <file>:<line>: error [loop.<reason>] <section>: <problem>. Fix: <what to do>.
+one note per blocker caught late:
+  <file>:<line>: note [loop.late] <section>: <problem>. Fix: <what to do>.
+then a status line and the verdict:
+  <file>: pass 2 of 3: 1 open blocker (1 fix, 0 decision), was 3, 1 new (0 in changed sections); 640 words, was 612 (+4.6%); gates ok
+  <file>: continue to pass 3: hand 1 fix blocker to the author
+  <file>: converged at pass 2
+  <file>: stop at pass 2: oscillation
+
+Settings, in .orca-kit/spec-review.yml next to the gate's (gate --help):
+  max_words: 2000     # the length ceiling, also the bloat ceiling
+  max_growth: 0.25    # the most a revision may grow the spec in one pass
+
+Every input is a file, so the same record and specs always get the same
+verdict. This script only reads files; it never edits the spec or the record.
+
+Exit codes: 0 converged, 1 stop, 3 continue, 2 a usage error, an unreadable
+or unparseable spec, an invalid settings file or record, a record with no
+passes, or a record whose `words` or `gates` don't match the specs given.
+
+Python 3 standard library only; no install step.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import sys
+from collections import Counter
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_sibling(name):
+    loader = importlib.machinery.SourceFileLoader("spec_review_" + name, os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+GATE = load_sibling("gate")
+RECORD = GATE.RECORD
+FINDINGS = GATE.FINDINGS
+
+MAX_PASSES = RECORD.MAX_PASSES
+REASONS = ("bloat-ceiling", "bloat-growth", "gate", "oscillation", "no-progress", "decision", "cap")
+
+RULE_TEXT = {
+    "loop.bloat-ceiling": "stop: the revision put the spec over the length ceiling (max_words)",
+    "loop.bloat-growth": "stop: the revision grew the spec by more than max_growth of its previous words in one pass",
+    "loop.gate": "stop: a hard gate fails on the spec (run gate for its lines)",
+    "loop.oscillation": "stop: the pass has a blocker (rule and section) the pass before didn't, in a section the revision changed",
+    "loop.late": "note: a new blocker in a section the revision didn't change was caught late; not oscillation",
+    "loop.no-progress": "stop: the open-blocker count didn't strictly decrease",
+    "loop.decision": "stop: an open blocker is kind decision, a question for the user",
+    "loop.cap": "stop: pass %d still has open blockers" % MAX_PASSES,
+}
+
+USAGE = ("usage: converge [--repo ROOT] [--record FILE] [--previous PREV.md] <spec.md>\n"
+         "       converge --rules")
+
+
+class UsageError(Exception):
+    pass
+
+
+class InputError(Exception):
+    """A problem with the inputs that stops the verdict (exit 2); the lines to print."""
+
+    def __init__(self, lines):
+        Exception.__init__(self, lines[0] if lines else "")
+        self.lines = lines
+
+
+def plural(n, word, many=None):
+    return "%d %s" % (n, word if n == 1 else (many or word + "s"))
+
+
+def blocker_key(finding):
+    """The same blocker across passes: rule and section, ignoring case and spacing."""
+    return (finding["rule"], FINDINGS._norm(finding["location"]["section"]))
+
+
+def blockers_of(entry):
+    return [f for f in entry["findings"] if f["severity"] == "blocker"]
+
+
+def new_blockers(current, previous):
+    """The blockers of `current` beyond what `previous` had, per key, in order."""
+    room = Counter(blocker_key(f) for f in previous)
+    out = []
+    for f in current:
+        key = blocker_key(f)
+        if room[key] > 0:
+            room[key] -= 1
+        else:
+            out.append(f)
+    return out
+
+
+def sections_of(text):
+    """{heading: text} for each `## ` section of a spec, outside code; headings ignore case and spacing."""
+    doc = GATE.Doc(text)
+    out, current = {}, None
+    for i in range(doc.body_start, len(doc.lines)):
+        line = doc.lines[i]
+        if not doc.in_code[i] and line.startswith("## "):
+            current = FINDINGS._norm(line[3:])
+            out[current] = []
+        elif current is not None:
+            out[current].append(line.rstrip())
+    return dict((k, "\n".join(v).strip("\n")) for k, v in out.items())
+
+
+def changed_sections(text, previous_text):
+    """The headings (normalised) whose text differs between the two specs, or that only one of them has."""
+    a, b = sections_of(text), sections_of(previous_text)
+    return set(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+
+
+def read_spec(path, what):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise InputError(["%s:1: error [usage] file: can't read the %s (%s). Fix: Pass the path to a spec .md file." % (path, what, e)])
+
+
+def growth_text(words, prev_words):
+    if prev_words is None:
+        return ""
+    if prev_words == 0:
+        return ", was 0"
+    return ", was %d (%+.1f%%)" % (prev_words, 100.0 * (words - prev_words) / prev_words)
+
+
+def decide(spec, repo_opt=None, record_path=None, previous=None):
+    """(exit code, output lines) for one spec. Raises InputError for exit 2."""
+    text = read_spec(spec, "spec")
+    repo = os.path.abspath(repo_opt) if repo_opt else GATE.find_repo(spec)
+    try:
+        config, _ = GATE.load_config(repo)
+    except GATE.ConfigError as e:
+        cfg = os.path.relpath(os.path.join(repo, GATE.CONFIG_PATH))
+        raise InputError(["%s:%d: error [config] settings: %s. Fix: Correct the settings file; `gate --help` shows the format." % (cfg, e.line, e.message)])
+
+    rec = record_path or GATE.record_path(spec)
+    if not os.path.isfile(rec):
+        raise InputError(["%s:1: error [loop.record] file: no review record at %s. Fix: Run a review pass and write the record first." % (spec, rec)])
+    _, rec_lines, data = RECORD.check_file(rec)
+    if data is None:
+        raise InputError(rec_lines + ["%s:1: error [loop.record] file: the review record %s isn't valid. Fix: Correct it; `record --help` shows the format." % (spec, rec)])
+    passes = data.get("passes")
+    if not passes:
+        raise InputError(["%s:1: error [loop.record] file: %s has no passes. Fix: Record the review pass before asking for a verdict." % (spec, rec)])
+    n = len(passes)
+    if n >= 2 and previous is None:
+        raise InputError(["%s:1: error [usage] file: pass %d needs --previous, the spec as it was before the revision. "
+                          "Fix: Pass the copy saved before the blockers were handed back." % (spec, n)])
+    if n == 1 and previous is not None:
+        raise InputError(["%s:1: error [usage] file: pass 1 has no revision, so --previous doesn't apply. Fix: Leave it out." % spec])
+
+    gate_code, gate_lines = GATE.gate_file(spec, repo_opt)
+    if gate_code == 2:
+        raise InputError(gate_lines)
+    gates_ok = gate_code == 0
+    words = GATE.count_words(GATE.Doc(text))
+    prev_words, changed = None, set()
+    if previous is not None:
+        prev_text = read_spec(previous, "previous spec")
+        prev_words = GATE.count_words(GATE.Doc(prev_text))
+        changed = changed_sections(text, prev_text)
+
+    last, before = passes[-1], (passes[-2] if n >= 2 else None)
+    mismatch = []
+    if "words" in last and last["words"] != words:
+        mismatch.append("pass %d records %d words, but %s has %d" % (n, last["words"], spec, words))
+    if "gates" in last and last["gates"] != ("passed" if gates_ok else "failed"):
+        mismatch.append("pass %d records gates %s, but they %s on %s" % (n, last["gates"], "pass" if gates_ok else "fail", spec))
+    if before is not None and "words" in before and before["words"] != prev_words:
+        mismatch.append("pass %d records %d words, but %s has %d" % (n - 1, before["words"], previous, prev_words))
+    if mismatch:
+        raise InputError(["%s:1: error [loop.record] file: %s. Fix: Give the spec this pass reviewed and the copy saved before its revision, "
+                          "or correct the record." % (spec, m) for m in mismatch])
+
+    current = blockers_of(last)
+    open_n = len(current)
+    decisions = [f for f in current if f["kind"] == "decision"]
+    fixes = open_n - len(decisions)
+    new = new_blockers(current, blockers_of(before)) if before is not None else []
+    caused = [f for f in new if FINDINGS._norm(f["location"]["section"]) in changed or
+              FINDINGS._norm(f["location"]["section"]) not in sections_of(text)]
+    late = [f for f in new if f not in caused]
+    was = len(blockers_of(before)) if before is not None else None
+
+    status = "%s: pass %d of %d: %s (%d fix, %d decision)" % (spec, n, MAX_PASSES, plural(open_n, "open blocker"), fixes, len(decisions))
+    if was is not None:
+        status += ", was %d, %d new (%d in changed sections)" % (was, len(new), len(caused))
+    status += "; %s%s; gates %s" % (plural(words, "word"), growth_text(words, prev_words), "ok" if gates_ok else "failed")
+
+    problems = []
+    reason = None
+    ceiling, max_growth = config["max_words"], config["max_growth"]
+
+    def problem(line, rule, section, message, fix):
+        problems.append("%s:%d: error [loop.%s] %s: %s. Fix: %s." % (spec, line, rule, section, message, fix[0].upper() + fix[1:]))
+
+    if prev_words is not None and words > ceiling:
+        reason = "bloat-ceiling"
+        problem(1, reason, "file", "the revision made the spec %d words, over the ceiling of %d (it was %d)" % (words, ceiling, prev_words),
+                "reject the revision and restore %s; fix blockers by tightening text, not adding paragraphs" % previous)
+    elif prev_words is not None and words - prev_words > max_growth * prev_words:
+        reason = "bloat-growth"
+        problem(1, reason, "file", "the revision grew the spec from %d to %d words, more than max_growth %s of %d in one pass" % (
+            prev_words, words, ("%g" % max_growth), prev_words),
+            "reject the revision and restore %s; fix blockers by tightening text, not adding paragraphs" % previous)
+    elif not gates_ok:
+        reason = "gate"
+        failed = [l for l in gate_lines if ": gates failed: " in l]
+        problem(1, reason, "file", "a hard gate fails (%s)" % (failed[0].split(": gates failed: ", 1)[1] if failed else "see gate"),
+                "run gate on the spec for every failing line; the loop goes on only on a spec that passes its gates")
+    elif caused:
+        reason = "oscillation"
+        for f in caused:
+            problem(f["location"]["line"] or 1, reason, f["location"]["section"],
+                    "blocker %s (%s, %s) is new in pass %d, in a section the revision changed" % (f["rule"], f["id"], f["kind"], n),
+                    "stop and ask the user; the revision introduced a blocker, so another pass won't converge")
+    elif was is not None and open_n >= was:
+        reason = "no-progress"
+        problem(1, reason, "file", "pass %d has %d open blockers, not fewer than pass %d's %d" % (n, open_n, n - 1, was),
+                "stop and ask the user; more passes won't fix missing context")
+    elif open_n == 0:
+        reason = None
+    elif decisions:
+        reason = "decision"
+        for f in decisions:
+            problem(f["location"]["line"] or 1, reason, f["location"]["section"],
+                    "blocker %s (%s) is a decision for the user" % (f["rule"], f["id"]),
+                    "ask the user, with the options; the author never answers a decision")
+    elif n >= MAX_PASSES:
+        reason = "cap"
+        problem(1, reason, "file", "pass %d of %d still has %s" % (n, MAX_PASSES, plural(open_n, "open blocker")),
+                "stop and ask the user; the loop has no passes left")
+
+    notes = ["%s:%d: note [loop.late] %s: blocker %s (%s, %s) is new in pass %d, in a section the revision didn't change. "
+             "Fix: Treat it as caught late, not caused by the revision; it is handed back like any other blocker." % (
+                 spec, f["location"]["line"] or 1, f["location"]["section"], f["rule"], f["id"], f["kind"], n) for f in late]
+    lines = problems + notes + [status]
+    if reason:
+        return 1, lines + ["%s: stop at pass %d: %s" % (spec, n, reason)]
+    if open_n == 0:
+        return 0, lines + ["%s: converged at pass %d" % (spec, n)]
+    return 3, lines + ["%s: continue to pass %d: hand %s to the author" % (spec, n + 1, plural(fixes, "fix blocker"))]
+
+
+def parse_args(argv):
+    opts = {"mode": "decide", "repo": None, "record": None, "previous": None, "paths": []}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            opts["mode"] = "help"
+            return opts
+        if arg == "--rules":
+            opts["mode"] = "rules"
+            return opts
+        name = next((k for k in ("repo", "record", "previous") if arg == "--" + k or arg.startswith("--%s=" % k)), None)
+        if name:
+            if arg == "--" + name:
+                if i + 1 >= len(argv):
+                    raise UsageError("--%s needs a value" % name)
+                value, i = argv[i + 1], i + 2
+            else:
+                value, i = arg.split("=", 1)[1], i + 1
+            if opts[name] is not None:
+                raise UsageError("--%s given twice" % name)
+            opts[name] = value
+            continue
+        if arg == "--":
+            opts["paths"].extend(argv[i + 1:])
+            break
+        if arg.startswith("-") and arg != "-":
+            raise UsageError("unknown option %r" % arg)
+        opts["paths"].append(arg)
+        i += 1
+    if opts["repo"] is not None and not os.path.isdir(opts["repo"]):
+        raise UsageError("--repo %r is not a directory" % opts["repo"])
+    if len(opts["paths"]) != 1:
+        raise UsageError("give exactly one spec")
+    return opts
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        opts = parse_args(argv)
+    except UsageError as e:
+        sys.stderr.write("converge: %s\n%s\n" % (e, USAGE))
+        return 2
+    if opts["mode"] == "help":
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    if opts["mode"] == "rules":
+        for rule_id, text in RULE_TEXT.items():
+            print("  %-20s %s" % (rule_id, text))
+        return 0
+    try:
+        code, lines = decide(opts["paths"][0], opts["repo"], opts["record"], opts["previous"])
+    except InputError as e:
+        code, lines = 2, e.lines
+    for line in lines:
+        print(line)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

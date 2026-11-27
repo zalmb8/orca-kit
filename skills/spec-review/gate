@@ -62,6 +62,7 @@ or (with --risk) an invalid findings file or review record.
 Repo settings, all optional, in <repo>/.orca-kit/spec-review.yml:
   ticket_pattern: '[A-Z][A-Z0-9]+-[0-9]+'   # Python regex; set = traceability required
   max_words: 2000                           # length ceiling, words in the body
+  max_growth: 0.25                          # revision loop: most a spec may grow in one pass
   secret_patterns:                          # extra secret regexes (Python)
     - 'acme_[a-z0-9]{32}'
   risk_terms:                               # replaces that risk's default terms
@@ -92,7 +93,7 @@ CONFIG_PATH = os.path.join(".orca-kit", "spec-review.yml")
 
 GATES = ("check", "secrets", "blocks", "trace", "length")
 
-DEFAULTS = {"ticket_pattern": None, "max_words": 2000, "secret_patterns": [], "risk_terms": {}, "risk_paths": {}}
+DEFAULTS = {"ticket_pattern": None, "max_words": 2000, "max_growth": 0.25, "secret_patterns": [], "risk_terms": {}, "risk_paths": {}}
 
 RULE_TEXT = {
     "check.<rule>": "every rule of `skills/spec/check --as accepted` (see `check --rules`), under its own name",
@@ -666,6 +667,11 @@ def load_config(repo):
         if not (isinstance(mw, int) and not isinstance(mw, bool) and mw >= 1):
             raise ConfigError("max_words must be a whole number of at least 1, not %s" % json.dumps(mw))
         config["max_words"] = mw
+    if "max_growth" in data:
+        mg = data["max_growth"]
+        if not (isinstance(mg, (int, float)) and not isinstance(mg, bool) and 0 <= mg < float("inf")):
+            raise ConfigError("max_growth must be a number of at least 0, such as 0.25, not %s" % json.dumps(mg))
+        config["max_growth"] = mg
     if data.get("secret_patterns") is not None:
         sp = data["secret_patterns"]
         if not isinstance(sp, list):

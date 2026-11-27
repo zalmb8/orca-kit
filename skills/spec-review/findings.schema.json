@@ -22,7 +22,10 @@
           "type": "string",
           "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
         },
-        "severity": { "enum": ["blocker", "warning", "nit"] },
+        "severity": {
+          "description": "blocker: the spec can't be built or tested as written without someone guessing (fix: back to the author; decision: to the user). nit: a comment, no action required. Fixed by the rule: it must equal the level the rule's reviewer agent declares in its rubric table (agents/spec-review-<reviewer>.md), which JSON Schema can't express; the findings script checks it.",
+          "enum": ["blocker", "nit"]
+        },
         "kind": {
           "description": "fix: the author can resolve it from the spec and repo. decision: needs the user.",
           "enum": ["fix", "decision"]

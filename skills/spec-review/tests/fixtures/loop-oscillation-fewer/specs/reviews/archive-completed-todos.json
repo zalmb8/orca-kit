@@ -1,0 +1,89 @@
+{
+  "spec": "archive-completed-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 57,
+            "ref": "AC-4"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.missing-error-state",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 59,
+            "ref": "AC-5"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        },
+        {
+          "id": "blast-radius-1",
+          "reviewer": "blast-radius",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "blast-radius.unmentioned-contract",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 43,
+            "ref": null
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 3,
+      "words": 655,
+      "gates": "passed"
+    },
+    {
+      "findings": [
+        {
+          "id": "ambiguity-5",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.untestable-ac",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 49,
+            "ref": "AC-1"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 1,
+      "words": 664,
+      "gates": "passed"
+    }
+  ]
+}

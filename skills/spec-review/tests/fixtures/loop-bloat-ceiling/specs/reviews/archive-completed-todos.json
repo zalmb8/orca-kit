@@ -1,0 +1,36 @@
+{
+  "spec": "archive-completed-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 57,
+            "ref": "AC-4"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 1
+    },
+    {
+      "findings": [],
+      "open_blockers": 0
+    }
+  ]
+}

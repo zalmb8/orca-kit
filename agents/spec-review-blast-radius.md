@@ -19,20 +19,34 @@ Search the whole repo root, not only the files the spec names: the point is what
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
 
-| Rule | Report when |
-|---|---|
-| `blast-radius.unmentioned-contract` | The change affects a downstream contract the spec doesn't mention anywhere: code, a script, a service, a schema or a doc that reads or relies on what changes (a parser of the command's output, a reader of the file, a consumer of the type). |
-| `blast-radius.incompatible-change` | The spec mentions the affected contract or its consumer, but changes it in a way existing consumers or stored data break on, and says nothing about how they keep working. |
+| Rule | Level | Report when |
+|---|---|---|
+| `blast-radius.unmentioned-contract` | blocker | The change affects a downstream contract the spec doesn't mention anywhere, and a consumer of it would break or silently misbehave: code, a script, a service or a schema that reads or relies on what changes (a parser of the command's output, a reader of the file, a consumer of the type). |
+| `blast-radius.incompatible-change` | blocker | The spec mentions the affected contract or its consumer, but changes it in a way existing consumers or stored data break on, and says nothing about how they keep working. |
+| `blast-radius.stale-reference` | nit | A doc, help or usage text, or a comment that describes what changes would become incomplete or out of date, and no code, script or stored data breaks. |
 
-Tiebreaks, so the same problem always gets the same rule: if the spec doesn't mention the affected consumer or contract at all, it is `unmentioned-contract`, even when the change also breaks it. Report one finding per spec line that makes a change, at that line, and name every consumer it affects, with its path, in `evidence`.
+Tiebreaks, so the same problem always gets the same rule: if the spec doesn't mention the affected consumer or contract at all and the consumer would break or misbehave, it is `unmentioned-contract`, even when the change also breaks it; if only a description of it goes stale, it is `stale-reference`. A doc that other code parses, or that users' scripts rely on as a format, is a contract, not a reference. Report one finding per spec line that makes a change, at that line, and name every consumer it affects, with its path, in `evidence`.
 
 Don't report: consumers the spec already lists and handles; vague wording or missing error states; architecture or security; the spec's size. Other reviewers own those. A search that finds no consumer is not a finding.
 
-## Severity, kind and risk
+## Severity is fixed by the rule
 
-- `severity`: `blocker` when a consumer would break or silently misbehave once the spec is built; `warning` when it keeps working but its behavior or docs become wrong; `nit` for a mention that would only help.
+Two levels, each with one action:
+
+- **`blocker`**: the spec can't be built or tested as written without someone guessing. A `fix` blocker goes back to the author; a `decision` blocker goes to the user.
+- **`nit`**: a comment. Nothing has to change.
+
+Each rule in the table above is a blocker rule or a nit rule, and a finding's `severity` is always its rule's level: you decide only *whether a rule applies*, never how bad it is. `skills/spec-review/findings` rejects a finding whose severity differs from its rule's level. When a problem looks worse or milder than its rule's level, it belongs under the other rule of the pair, if there is one, or the level stands.
+
+Worked examples:
+
+- blocker, `unmentioned-contract`: the spec changes each `todo list` line to `- [ ] <title> (due YYYY-MM-DD)`, and `integrations/standup/digest.ts` parses those lines with a regex that would stop matching.
+- nit, `stale-reference`: the spec registers `todo archive`, and the top-level usage text in `src/cli.ts` (`usage: todo <add|done|list>`) would no longer list every command.
+
+## Kind and risk
+
 - `kind`: `fix` when the author can update the spec to cover the consumer (list it, update it, keep the old format). `decision` when covering it changes what the user gets or needs a call on compatibility (break the consumer, version the format, keep both): ask it.
 - `risk`: `public-api` when the contract is consumed outside this code (another service, a script users run, a documented format); `breaking-change` when existing consumers break on it; `data-model` or `migration` when it is persisted data; otherwise the closest of `auth`, `security-boundary`, `billing`, or `null`.
 
@@ -42,7 +56,7 @@ Return **only** a JSON array of findings: no prose before or after it, no Markdo
 
 - `id`: `"blast-radius-<n>"`, numbered from 1 in the order you report them.
 - `reviewer`: `"blast-radius"`.
-- `severity`: `"blocker"`, `"warning"` or `"nit"`.
+- `severity`: `"blocker"` or `"nit"`: exactly the level the rubric table gives the finding's `rule`.
 - `kind`: `"fix"` or `"decision"`.
 - `rule`: one key from the rubric above.
 - `location`: `{"section": <the spec's ## heading the text is under>, "line": <its 1-based line number in the spec, as the Read tool shows it, or null>, "ref": <the AC, decision or edge-case ID such as "AC-1", or null>}`. The location is always in the spec.

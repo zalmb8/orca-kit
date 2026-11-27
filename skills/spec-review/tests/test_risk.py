@@ -144,10 +144,10 @@ class Fixtures(unittest.TestCase):
         self.assertIn(":44: warning [risk.public-api] Interfaces & Data Contracts: finding blast-radius-1", out)
 
     def test_finding_raises_risk_whatever_its_severity(self):
-        # risk-finding's risky finding is a warning, not a blocker.
+        # risk-finding's risky finding is a nit, not a blocker.
         with open(os.path.join(FIXTURES, "risk-finding", "findings.json"), encoding="utf-8") as f:
             risky = [x for x in json.load(f) if x["risk"]]
-        self.assertEqual([x["severity"] for x in risky], ["warning"])
+        self.assertEqual([x["severity"] for x in risky], ["nit"])
 
     def test_same_spec_is_low_without_its_findings(self):
         result = run(GATE, "--risk", "--repo", os.path.join(FIXTURES, "risk-finding"), spec_of("risk-finding"))
