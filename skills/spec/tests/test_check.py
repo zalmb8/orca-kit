@@ -100,10 +100,16 @@ class ExamplesPass(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(result.stdout.strip(), "%s: ok (%s)" % (example(status), status))
 
+    def test_updated_example_passes(self):
+        path = os.path.join(EXAMPLES, "updated", NAME)
+        result = run(path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), "%s: ok (accepted)" % path)
+
     def test_all_examples_in_one_call(self):
         result = run(*sorted(glob.glob(os.path.join(EXAMPLES, "*", "*.md"))))
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(len(result.stdout.splitlines()), 3)
+        self.assertEqual(len(result.stdout.splitlines()), 4)
 
     def test_accepted_example_passes_as_accepted(self):
         self.assertEqual(run("--as", "accepted", example("accepted")).returncode, 0)
@@ -133,6 +139,85 @@ class DoneCriterion(unittest.TestCase):
         rules = {p["rule"] for p in problems(result.stdout)}
         self.assertEqual(rules, {"no-tbd", "ac.verify"})
         self.assertNotIn("frontmatter.accepted", rules)
+
+
+class UpdateDoneCriterion(unittest.TestCase):
+    """v0.6: a discovery made during implementation is synced into the spec, and it still passes.
+
+    examples/updated/ is examples/accepted/ after an update that adds a
+    discovered edge case and a decision and trims one passage of prose. None of
+    those needs re-acceptance, so everything gated stays exactly as accepted.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_module()
+        cls.before = cls.m.Spec(NAME, read(example("accepted")))
+        cls.after = cls.m.Spec(NAME, read(os.path.join(EXAMPLES, "updated", NAME)))
+
+    def acs(self, spec):
+        return {n: [it.line.text] + [c.text for c in it.children] for n, it in spec.behavior()[1]}
+
+    def edge_rows(self, spec):
+        return [ln.text for table in spec.behavior()[2] for ln in table[2:]]
+
+    def lists(self, spec):
+        found = {}
+        for title in (self.m.GOAL, self.m.BOUNDARIES):
+            for label, (_, entries) in self.m.labelled(spec, title)[1].items():
+                found[label] = [[it.line.text] + [c.text for c in it.children] for it in entries]
+        return found
+
+    def test_still_accepted_and_passes(self):
+        status, found = self.m.check_spec(self.after)
+        self.assertEqual(status, "accepted")
+        self.assertEqual(found, [])
+
+    def test_frontmatter(self):
+        b, a = self.before.fields, self.after.fields
+        self.assertGreater(a["updated"], b["updated"])
+        for key in ("id", "title", "status", "created", "accepted_by", "accepted_on"):
+            self.assertEqual(a[key], b[key], key)
+
+    def test_six_headings_and_no_changelog(self):
+        self.assertEqual([s.title for s in self.after.sections], list(self.m.SPEC_SECTIONS))
+
+    def test_acs_unchanged(self):
+        self.assertEqual(self.acs(self.after), self.acs(self.before))
+
+    def test_guardrail_lists_unchanged(self):
+        b, a = self.lists(self.before), self.lists(self.after)
+        for label in self.m.LIST_LABELS:
+            self.assertEqual(a[label], b[label], label)
+
+    def test_discovered_edge_case_added_under_existing_ac(self):
+        b, a = self.edge_rows(self.before), self.edge_rows(self.after)
+        self.assertTrue(set(b) <= set(a), "existing edge-case rows changed")
+        added = [r for r in a if r not in b]
+        self.assertEqual(len(added), 1, added)
+        new = added[0]
+        self.assertTrue(self.m.table_cells(new)[0].startswith("Empty:"), new)
+        self.assertIn(self.m.table_cells(new)[-1], ["AC-%d" % n for n in self.acs(self.before)])
+
+    def test_decision_added_with_next_id(self):
+        b = self.lists(self.before)["Decision Log"]
+        a = self.lists(self.after)["Decision Log"]
+        self.assertEqual(a[:len(b)], b, "existing decisions changed")
+        self.assertEqual(len(a), len(b) + 1)
+        self.assertTrue(a[-1][0].startswith("- **D-%d:**" % (len(b) + 1)), a[-1][0])
+
+    def test_prose_trimmed_to_links(self):
+        before = read(example("accepted"))
+        after = read(os.path.join(EXAMPLES, "updated", NAME))
+        trimmed = "- Output: a JSON array of `Todo` objects on stdout"
+        self.assertIn(trimmed, before)
+        self.assertNotIn(trimmed, after)
+        interfaces = self.after.section("Interfaces & Data Contracts")
+        text = "\n".join(ln.text for ln in interfaces.lines)
+        self.assertIn("`src/commands/export.ts`", text)
+        self.assertIn("`test/commands/export.test.ts`", text)
+        self.assertLess(self.m.count_words(interfaces),
+                        self.m.count_words(self.before.section("Interfaces & Data Contracts")))
 
 
 class Fixtures(unittest.TestCase):

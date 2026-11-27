@@ -73,7 +73,7 @@ Decision Log:
 - **ID.** `D-1`, `D-2`, … in the order written. Like AC IDs, they are stable: never renumber them, and never reuse the ID of a removed entry.
 - **`why:`** the reason, in the user's terms for an interview decision, or what the repo shows for a repo decision.
 - **`rejected:`** the alternatives that were actually on the table: the options the interview offered, ones the user named, or what the repo's convention rules out. Separate several with semicolons. If none were raised, ask the user; write `rejected: none considered` only if the user says so.
-- **`source:`** `interview` for a choice the user made in the conversation or the interview, or the repo-relative paths that show a choice the repo already settled.
+- **`source:`** `interview` for a choice the user made in the conversation or the interview, or the repo-relative paths that show a choice the repo already settled. Update mode writes `conversation` for a choice the user made while building, followed by the paths that implement it (see `update.md`).
 - **Never invent a decision.** An entry is either something the user decided or a choice the repo already settled. A choice refine would make itself is a question for the interview, and becomes an entry only once the user answers it.
 - **Repo decisions.** Record a settled repo choice only when the feature could plausibly go another way and an agent might reopen it: the single module that reads the store, the error-handling pattern sibling commands share, an established library for the same job. Commands go in Environment & Commands and types in Interfaces & Data Contracts, not here.
 - **`TBD:`** In a `draft`, an entry whose reason or alternatives aren't known yet has a `TBD:` line in place of that line. An `accepted` spec has none.

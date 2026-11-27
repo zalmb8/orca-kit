@@ -78,7 +78,20 @@ Refine leaves the spec at `draft` until the user accepts it. Never ask the user 
 
 ## Update
 
-Write discoveries made during implementation back into an `accepted` spec and bump `updated`. If the acceptance criteria change, ask the user to accept again.
+Write discoveries made during implementation back into an `accepted` spec, trim prose that types and tests now state, and keep it `accepted` and passing the check. Follow `${CLAUDE_PLUGIN_ROOT}/skills/spec/update.md`.
+
+1. **Find the spec** as refine does. Update runs only on an `accepted` spec. If it is `idea` or `draft`, say so and suggest refine instead; if it is `done` or `superseded`, leave it alone and say so. Run the checker on it first; if it already fails, fix it as step 6 says before adding anything.
+2. **Gather discoveries** from the conversation and from the implementation: `git log` and `git diff` since the commit that accepted the spec, on the files it links to and the tests its `verify:` lines name; new or changed tests and types; edge cases and failures found while building. Never invent a discovery. If something is unclear, ask; if it stays unclear, leave it out and report it.
+3. **Sort each change.** Adding a new decision, an edge-case row under an existing AC that already covers it, contract details that match the code, and trims only add information. Adding, removing or changing an AC, a Non-goal, or an Always, Ask First or Never rule, and changing or removing an existing edge-case row, needs re-acceptance. The full table is in `update.md`.
+4. **Write the information-only changes** into the section each belongs to:
+   - a new edge case becomes a row in the edge-case table, pointing to the AC that covers it, or to a new AC (step 5) when the behavior is new;
+   - a new settled decision becomes a Decision Log entry with the next unused `D-n` and `why:`, `rejected:` and `source:` lines, in the format of `guardrails.md`;
+   - a changed contract updates Interfaces & Data Contracts, linking to the real files as `repo-scan.md` says;
+   - prose that a real type, schema or test now states is replaced by a link to it. Never trim the ACs, the edge-case table, the Non-goals or the guardrails.
+   Keep exactly the six headings and add no changelog: git history records the changes. Bump `updated` to today.
+5. **Ask before a gated change.** Show the user each change that needs re-acceptance, before and after, and get an explicit yes for it. On a yes, write it, rebuild the Verification Gate if an AC changed, and set `accepted_by`, `accepted_on` and `updated` again. On a no, leave that change out and keep the other updates. AC and decision IDs stay stable; a removed ID is never reused.
+6. **Check it.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check specs/<slug>.md` after every update; it must exit 0 with `ok (accepted)`. Fix what fails without deleting an AC, row, non-goal, boundary or decision, or ask the user. If it still fails, restore the spec as it was before the update. Never leave an accepted spec failing the check.
+7. **Report** each discovery and where it went (AC or D ID), what was trimmed, each gated change and the user's answer, anything left out, and the checker's result.
 
 ## Spec files
 
@@ -112,7 +125,7 @@ accepted_on:
 | `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Goal & Non-Goals has a `Non-goals:` list; Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists and a `Decision Log:`. Other TBDs and open questions are allowed. |
 | `accepted` | refine, with the user's approval | All six sections are filled in. Every behavior is an AC and every AC has a `verify:` line. The Non-goals and the Always, Ask First and Never lists each have at least one item, and the Decision Log has at least one entry with `why:`, `rejected:` and `source:` lines; none of them has a `TBD:` line. No TBDs and no open questions anywhere. `accepted_by` and `accepted_on` are set. |
 
-- **Only the user can accept a spec.** Set `accepted` only after the user's explicit yes, and record who accepted it (`accepted_by`) and when (`accepted_on`). Never infer approval.
+- **Only the user can accept a spec.** Set `accepted` only after the user's explicit yes, and record who accepted it (`accepted_by`) and when (`accepted_on`). Never infer approval. The same holds when update re-accepts a spec.
 - **This skill never sets `done` or `superseded`.** Other skills, or the user by hand, set those statuses. Leave such specs alone.
 - Never move a spec to a status whose required content is missing. If it doesn't qualify, leave it at the lower status and say what is missing.
 
@@ -140,6 +153,7 @@ accepted_on:
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/repo-scan.md`: where refine looks for commands, critical files and types.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/acceptance-criteria.md`: the AC format, the edge-case table and how refine builds the Verification Gate.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/guardrails.md`: the Non-goals, the default Always / Ask First / Never lists and how refine adapts them, and the Decision Log format.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec/examples/`: an `idea`, the `draft` that refining it produces, and the `accepted` spec a second refine produces from that draft. All three pass the checker.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec/update.md`: how update gathers discoveries, which changes need re-acceptance, and what it may trim.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec/examples/`: an `idea`, the `draft` that refining it produces, the `accepted` spec a second refine produces from that draft, and that spec after an update (`examples/updated/`). All four pass the checker.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/check`: the checker (see [Checker](#checker)).
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/tests/`: the checker's tests and failing fixtures; run `python3 -m unittest discover -s skills/spec/tests` from the plugin root.
