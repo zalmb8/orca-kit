@@ -81,12 +81,12 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] The status rules documented in SKILL.md.
 - [x] **Done when:** the skill loads as `orca-kit:spec` and can write a correctly formatted `idea` file.
 
-### v0.2: Capture and refine modes
-- Capture writes an `idea` from the conversation with no questions asked.
-- Refine scans the repo (package.json, Makefile, pyproject, CI config) and prefills Environment & Commands.
-- Refine finds critical files and existing types and links to them instead of copying them.
-- Refine asks the user only about intent: goal, non-goals and decisions already made.
-- **Done when:** an `idea` can be refined into a `draft` with every section present.
+### v0.2: Capture and refine modes ✅
+- [x] Capture writes an `idea` from the conversation with no questions asked.
+- [x] Refine scans the repo (package.json, Makefile, pyproject, CI config) and prefills Environment & Commands.
+- [x] Refine finds critical files and existing types and links to them instead of copying them.
+- [x] Refine asks the user only about intent: goal, non-goals and decisions already made.
+- [x] **Done when:** an `idea` can be refined into a `draft` with every section present.
 
 ### v0.3: Acceptance criteria and edge cases
 - Each AC has an ID (`AC-n`), a Given/When/Then description and a `verify:` command or test.
@@ -114,7 +114,7 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - **Done when:** a discovery made during implementation can be synced into the spec, and the spec still passes the checker.
 
 ### Alongside each release
-- Sample specs in `skills/spec/examples/` (one `idea`, one `accepted`) to use as test fixtures.
+- Sample specs in `skills/spec/examples/<status>/<slug>.md` (an `idea`, the `draft` refined from it, and later an `accepted`) to use as test fixtures.
 
 ## Decision log
 
@@ -127,3 +127,9 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | One skill with three modes | The modes share the template, the status rules and the checker. |
 | Section headings in `template-spec.md` are the bare names from the six-sections table (`## Goal & Non-Goals`, …), with no numbers | Exact, predictable headings let agents find a section by name. |
 | `template-spec.md` starts at `status: draft`; `template-idea.md` at `status: idea` | Each template matches the status of the mode that first writes it. |
+| Capture derives the slug from the title and never overwrites an existing `specs/<slug>.md` | Capture asks no questions, so it can't confirm an overwrite; refine is the way to change an existing spec. |
+| In a `draft`, unresolved questions become `TBD:` lines in the section they affect, not an extra `## Open Questions` heading | Keeps exactly the six template headings, and puts each gap next to the content it blocks. |
+| Refine moves the idea's Context and Open Questions into the six sections instead of keeping them as headings | Nothing from the idea is lost, and the draft keeps the same predictable headings. |
+| The repo scan's sources and linking rules live in `skills/spec/repo-scan.md` | Keeps SKILL.md short; refine loads the details only when it scans. |
+| When CI and local scripts disagree, Environment & Commands lists the CI command first | CI is what must pass to merge. |
+| Examples live at `skills/spec/examples/<status>/<slug>.md` | Each fixture keeps the real file name, so `id` equals the file name. |
