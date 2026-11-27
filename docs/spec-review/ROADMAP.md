@@ -91,11 +91,11 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Output in the spec checker's format: `<file>:<line>: <severity> [<gate>] <section>: <problem>. Fix: <what to do>.`
 - [x] **Done when:** the same spec always gets the same result, and a failing fixture exists for each gate.
 
-### v0.3: Risk tiering and sign-off
-- [ ] A deterministic classifier in `gate --risk`: paths and terms for auth, permissions, migrations, data models, billing and public or breaking API changes, tunable in `.orca-kit/spec-review.yml`.
-- [ ] Advisory reviewers can raise a `risk` on a finding; either source puts the spec in the high-risk tier.
-- [ ] A high-risk spec needs a sign-off record (`signed_off_by`, `signed_off_on`, the risks shown) in `specs/reviews/<slug>.json` before review can pass. The skill asks; only the user's explicit yes fills it in.
-- [ ] **Done when:** a spec touching a migration can't pass review without a recorded human sign-off, and the skill never records one itself.
+### v0.3: Risk tiering and sign-off ✅
+- [x] A deterministic classifier in `gate --risk`: paths and terms for auth, permissions, migrations, data models, billing and public or breaking API changes, tunable in `.orca-kit/spec-review.yml`.
+- [x] Advisory reviewers can raise a `risk` on a finding; either source puts the spec in the high-risk tier.
+- [x] A high-risk spec needs a sign-off record (`signed_off_by`, `signed_off_on`, the risks shown) in `specs/reviews/<slug>.json` before review can pass. The skill asks; only the user's explicit yes fills it in.
+- [x] **Done when:** a spec touching a migration can't pass review without a recorded human sign-off, and the skill never records one itself.
 
 ### v0.4: Specialised reviewers
 - [ ] The five agents in `agents/`, each with its rubric, its `rule` keys, a context list, and the findings format.
@@ -167,3 +167,17 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | The length ceiling counts words in the body the way the checker's section budgets do, default 2000 | The example accepted spec is about 1200 words, and the checker's section budgets allow up to 2830; 2000 fails the skim test before the budgets do. |
 | The repo is the nearest directory at or above the spec with `.orca-kit/` or `.git`, or `--repo` | Specs live at `specs/<slug>.md`, so the settings are found with no flag; `--repo` covers anything else. |
 | Gate fixtures are `tests/fixtures/gate-<case>/`, each a small repo with its own settings and schema files | Each case is self-contained, and the findings fixtures stay as they are. |
+| `gate --risk` runs the five gates and then the risk step in one command; without `--risk` the output and exit codes are unchanged | One command is the whole deterministic part of a review, and v0.2 callers and tests see no difference. |
+| Risk is not a sixth gate: its reasons are `warning [risk.<risk>]` lines after the gates' result line, a missing or stale sign-off is one `error [risk.sign-off]`, and a `risk …` result line follows | Core rule 2: risk blocks only to require a sign-off. Warnings are the checker format's way to report without failing, and `GATES` and the gates' result line stay as they were. |
+| Two tiers, `low` and `high`; any risk from either source makes it `high` | The roadmap names only a high tier and one consequence (sign-off); a medium tier would have no behaviour. |
+| Risk terms are lowercase phrases (words joined by space, `-`, `_` or nothing; a trailing `*` for any ending), not regexes; paths are case-insensitive globs against each path-like token with a leading `/` | Risk lists are edited by hand and are long; phrases and globs are easier to read and tune than regexes, and stay deterministic. Ticket and secret patterns stay regexes. |
+| The classifier reads the body only, code blocks included, and reports one reason per risk and matching term or glob, at its first line, counting the rest | A migration in a SQL block is still a migration, and the frontmatter repeats the title. Fifteen lines saying "migration" would bury the reasons the user has to read. |
+| `risk_terms` / `risk_paths` replace a listed risk's defaults; unlisted risks keep theirs | One rule covers removing a false positive (an empty list) and adding a repo's own paths (copy and extend); defaults are listed in `risk.md` and a test keeps it in step with the code. |
+| Defaults lean toward escalating, and "permissions" maps to `auth` | A false high costs one question; a missed high is an unreviewed risky change. The `risk` enum has no separate permissions value. |
+| Findings come in as `gate --risk --findings <file>` (repeatable, one spec per run); a finding of any severity or kind with a non-null `risk` raises the tier | No reviewer agents exist until v0.4, so a file is the smallest interface, and it is the same one v0.4 will produce. A nit can still name a risky area. |
+| A findings file the validator rejects stops the risk step with exit 2, rather than dropping the bad finding and computing a tier | A dropped finding could be the one carrying the risk; a tier from partial input could pass a risky spec. |
+| The review record is `specs/reviews/<slug>.json` next to the spec, with exactly `spec`, `risk` (`tier`, `risks`, `reasons`) and `sign_off` (`null` or `signed_off_by`, `signed_off_on`, `risks`); unknown fields are rejected, and a `record` script validates it | The smallest record that holds the tier, its reasons and the sign-off. Strict like the findings format; v0.4–v0.6 add their fields (gate results, passes, questions) to the same list. |
+| A sign-off is valid only when its `risks` equal the current risks as a set; a record that fails `record` is never read as a sign-off (exit 2) | "The risks shown" are what the human agreed to; any change, even a risk going away, is a different spec from the one they signed off. |
+| No script writes the record; Claude writes it by hand after the user's explicit yes, with the name the user gives, and a test checks the scripts never write files | Core rule 2, and the v0.3 done criterion: the only path to a sign-off goes through the user. |
+| Low-risk specs need no record in v0.3 | Nothing in it would be read yet; v0.6's review summary is where every review gets one. |
+| Risk fixtures are `tests/fixtures/risk-<case>/`, each a small repo with `specs/<slug>.md` and, when the case needs one, `specs/reviews/<slug>.json` | The record sits where a real repo keeps it, so the fixtures test the path the gate looks up. |

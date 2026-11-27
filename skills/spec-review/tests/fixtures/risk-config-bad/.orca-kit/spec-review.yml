@@ -1,0 +1,3 @@
+risk_terms:
+  migrations:
+    - 'flyway'

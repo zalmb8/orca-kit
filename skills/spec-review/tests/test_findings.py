@@ -86,7 +86,7 @@ FIXTURE_EXPECTATIONS = {
 
 class Fixtures(unittest.TestCase):
     def test_every_fixture_has_an_expectation(self):
-        found = sorted(d for d in os.listdir(FIXTURES) if not d.startswith("gate-"))  # gate-*: test_gate.py
+        found = sorted(d for d in os.listdir(FIXTURES) if not d.startswith(("gate-", "risk-")))  # gate-*: test_gate.py; risk-*: test_risk.py
         self.assertEqual(found, sorted(FIXTURE_EXPECTATIONS))
 
     def test_fixtures(self):

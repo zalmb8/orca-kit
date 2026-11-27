@@ -1,25 +1,24 @@
 ---
 name: spec-review
-description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling) or validate a reviewer's findings JSON.
+description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling), tier its risk (auth, migrations, data models, billing, public or breaking API changes) and require a human sign-off for a high-risk spec, or validate a reviewer's findings JSON or a review record.
 ---
 
 # spec-review
 
-Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates have run and the user has every gate's result with its lines, and every finding the review uses has passed the findings validator.
+Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates and the risk step have run, the user has every result with its lines, a high-risk spec has the user's own sign-off or is reported as not passing, and every finding the review uses has passed the findings validator.
 
-## Status (v0.2)
+## Status (v0.3)
 
-Available: the hard gates (`gate`) and the findings format with its validator (`findings`). The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
+Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), and the findings format with its validator (`findings`). The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
 
 | Step | Planned in |
 |---|---|
-| Risk tiering and human sign-off | v0.3 |
 | The five reviewer agents (`spec-review-ambiguity`, `-architecture`, `-security`, `-blast-radius`, `-slicer`) | v0.4 |
 | Bounded revision loop | v0.5 |
 | Human-in-the-loop pauses and the review summary | v0.6 |
 | Graduating repeated findings (`findings --stats`) | v0.7 |
 
-When the user asks to review a spec, run the hard gates below and report their results. Say plainly that risk tiering and the advisory reviewers aren't available yet, and don't run a review that imitates them. Passing the gates means only that: never report a spec as reviewed or ready to build.
+When the user asks to review a spec, run `gate --risk` (below) and report the gates' and the risk step's results; if the spec is high risk and not signed off, ask for the sign-off as [Risk and sign-off](#risk-and-sign-off) says. Say plainly that the advisory reviewers, the revision loop and the review summary aren't available yet, and don't run a review that imitates them. Passing `gate --risk` means only that: never report a spec as reviewed or ready to build.
 
 ## Core rules
 
@@ -59,9 +58,27 @@ ticket_pattern: '\b[A-Z][A-Z0-9]+-[0-9]+\b'  # set = every spec must name a tick
 max_words: 2000                             # length ceiling
 secret_patterns:                            # extra secret regexes
   - 'acme_[a-z0-9]{32}'
+risk_terms:                                 # replaces a risk's default terms
+  billing: []                               # (risk.md lists the defaults)
+risk_paths:                                 # replaces a risk's default paths
+  migration: ['*/migrations/*', '*/db/changes/*']
 ```
 
-Patterns are Python regexes; quote them in single quotes. Any other key, or a value of the wrong type, is an error.
+Patterns are Python regexes; quote them in single quotes. Risk terms are lowercase words (a trailing `*` matches any ending) and risk paths are globs. Any other key, or a value of the wrong type, is an error.
+
+## Risk and sign-off
+
+`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate --risk [--repo ROOT] [--findings <findings.json> ...] specs/<slug>.md` runs the gates, then puts the spec in a risk tier. It is deterministic and only reads files. The classifier's defaults, the settings, the record format and the sign-off rules are in `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/risk.md`; read it before recording a sign-off.
+
+- **Tier.** A spec is **high** risk when it names a path or term for `auth`, `security-boundary`, `data-model`, `migration`, `billing`, `public-api` or `breaking-change`, or when a finding passed with `--findings` has a non-null `risk`. Otherwise it is **low**, and needs no sign-off.
+- **Output.** After the gates' result line: one `warning [risk.<risk>]` line per reason, then `<file>: risk low`, or `<file>: risk high: <risks>;` followed by `signed off by <name> on <date>`, `sign-off needed` or `sign-off stale (signed for <risks>)`, with a `risk.sign-off` error for the last two.
+- **Exit.** 0 when the gates pass and the spec is low risk or signed off; 1 when a gate fails or a sign-off is missing or stale; 2 for the gate's own exit-2 cases, a findings file the validator rejects (the tier isn't computed from partial findings), or a review record that `record` rejects.
+- **Findings.** Pass every reviewer findings file with `--findings` (one spec per run). Until the reviewer agents exist (v0.4), that is only a findings file the user gives you.
+- **Sign-off.** A high-risk spec passes only with a sign-off in `specs/reviews/<slug>.json` whose risks equal the current risks; a changed risk set makes an old sign-off stale. No script ever writes that file. **Only the user's explicit yes fills it in**: show them the risks and every reason line, ask whether they sign off on exactly those risks and under what name, and only on a clear yes write the record as risk.md says (their name, today's date, the risks shown). Never sign off yourself, never reuse an earlier yes for a different risk set, and never take a name from git config or the spec. On a no, the spec doesn't pass; say what would change that.
+- **Tuning.** A repo can replace any risk's terms or paths in `.orca-kit/spec-review.yml` (`risk_terms`, `risk_paths`); a false high is a settings change for the user to make, never a reason to skip the sign-off.
+- If `python3` isn't available, say the risk step didn't run; never call a spec low risk on a by-hand reading.
+
+`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record specs/reviews/<slug>.json` validates a review record: `<file>:<line>: error [record.<rule>] <field>: <problem>. Fix: …`, then `<file>: ok, risk high (migration), signed off by <name> on <date>`. It exits 0 when valid, 1 on a rule failure, 2 for a usage error or a file that isn't a JSON object. `--rules` lists its rules. Run it after writing a record.
 
 ## Findings
 
@@ -114,5 +131,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate`: the hard gates.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings`: the findings validator.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record`: the review record validator.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/risk.md`: the risk classifier's defaults and settings, the review record format, and how to record a sign-off.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings.schema.json`: the findings format as JSON Schema; the validator implements the same rules by hand, and its tests check the two agree.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validator's tests and fixtures (`gate-*` fixtures are specs); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validators' tests and fixtures (`gate-*` fixtures are specs, `risk-*` fixtures are small repos with `specs/` and review records); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.

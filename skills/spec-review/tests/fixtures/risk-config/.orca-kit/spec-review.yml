@@ -1,0 +1,8 @@
+# This repo's store migrations are routine: replace the migration defaults
+# with nothing, and treat a store version bump as a data-model change.
+risk_terms:
+  migration: []
+  data-model:
+    - 'store version*'
+risk_paths:
+  migration: []
