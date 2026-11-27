@@ -1,0 +1,88 @@
+[
+  {
+    "spec": "repo/specs/archive-completed-todos.md",
+    "seeded": "a weasel word",
+    "reviewer": "ambiguity",
+    "rule": "ambiguity.weasel-word",
+    "evidence": "the command stays fast and handles the large store gracefully",
+    "locations": [
+      {
+        "section": "Behavior & Edge Cases",
+        "line": 57
+      }
+    ]
+  },
+  {
+    "spec": "repo/specs/import-todos-from-json.md",
+    "seeded": "a missing error state: a file that exists but isn't a JSON array of todos",
+    "reviewer": "ambiguity",
+    "rule": "ambiguity.missing-error-state",
+    "evidence": "holds a JSON array of `Todo`",
+    "locations": [
+      {
+        "section": "Interfaces & Data Contracts",
+        "line": 43
+      },
+      {
+        "section": "Behavior & Edge Cases",
+        "line": 54
+      }
+    ]
+  },
+  {
+    "spec": "repo/specs/show-due-dates-in-list.md",
+    "seeded": "an unmentioned downstream contract: integrations/standup/digest.ts parses `todo list` output",
+    "reviewer": "blast-radius",
+    "rule": "blast-radius.unmentioned-contract",
+    "evidence": "a todo with a due date prints as `- [ ] <title> (due YYYY-MM-DD)`",
+    "locations": [
+      {
+        "section": "Interfaces & Data Contracts",
+        "line": 42
+      }
+    ]
+  },
+  {
+    "spec": "repo/specs/organize-todos.md",
+    "seeded": "an oversized spec: 15 ACs across three independent features",
+    "reviewer": "slicer",
+    "rule": "slicer.oversized",
+    "evidence": "Users can organize todos three ways",
+    "locations": [
+      {
+        "section": "Goal & Non-Goals",
+        "line": 13
+      }
+    ]
+  },
+  {
+    "spec": "repo/specs/rename-a-todo.md",
+    "seeded": "drift from an ADR: docs/adr/0001-store-access.md says only src/store.ts touches the store file",
+    "reviewer": "architecture",
+    "rule": "architecture.adr-conflict",
+    "evidence": "writes the file back with `writeFileSync`",
+    "locations": [
+      {
+        "section": "Interfaces & Data Contracts",
+        "line": 43
+      },
+      {
+        "section": "Boundaries & Decision Log",
+        "line": 84
+      }
+    ]
+  },
+  {
+    "spec": "repo/specs/open-a-todos-link.md",
+    "seeded": "a trust boundary: the stored link is interpolated into a shell command",
+    "reviewer": "security",
+    "rule": "security.trust-boundary",
+    "evidence": "runs it with `child_process.exec`",
+    "locations": [
+      {
+        "section": "Interfaces & Data Contracts",
+        "line": 43
+      }
+    ]
+  }
+]

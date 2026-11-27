@@ -4,6 +4,7 @@
 Usage:
   gate [--repo ROOT] <spec.md> [<spec.md> ...]
   gate --risk [--repo ROOT] [--findings FILE ...] <spec.md> [<spec.md> ...]
+  gate --counts [--repo ROOT] <spec.md> [<spec.md> ...]
   gate --gates
 
   --repo ROOT   The repo the spec belongs to: where .orca-kit/spec-review.yml
@@ -15,6 +16,11 @@ Usage:
   --findings F  With --risk and one spec: a reviewer's findings file, checked
                 with the findings validator; a finding's `risk` raises the
                 tier. Repeatable.
+  --counts      Print the spec's size instead of gating it, one line per
+                spec: `<file>: <words> words (ceiling <max_words>), <n> ACs`.
+                Words are counted as the length gate counts them; ACs are
+                the `- **AC-n:**` items outside code. The slicer reviewer
+                gets this line (v0.4). Exits 0, or 2 as below.
   --gates       List the gates and their rules, and exit.
 
 Gates, in order (docs/spec-review/ROADMAP.md, v0.2):
@@ -1057,6 +1063,15 @@ def count_words(doc):
     return n
 
 
+AC_ITEM_RE = re.compile(r"^- \*\*AC-(\d+):\*\*")
+
+
+def count_acs(doc):
+    """The `- **AC-n:**` items in the body, outside code, as the checker writes them."""
+    return sum(1 for i in range(doc.body_start, len(doc.lines))
+               if not doc.in_code[i] and AC_ITEM_RE.match(doc.lines[i]))
+
+
 def gate_length(path, doc, config, repo):
     words = count_words(doc)
     ceiling = config["max_words"]
@@ -1347,13 +1362,32 @@ def gate_file(path, repo_opt, risk=False, findings_paths=()):
     return code, lines
 
 
+def counts_file(path, repo_opt):
+    """(exit code, output lines) for `--counts`: the spec's word and AC counts."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return 2, ["%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a spec .md file." % (path, e)]
+    repo = os.path.abspath(repo_opt) if repo_opt else find_repo(path)
+    try:
+        config, _ = load_config(repo)
+    except ConfigError as e:
+        cfg = os.path.relpath(os.path.join(repo, CONFIG_PATH))
+        return 2, ["%s:%d: error [config] settings: %s. Fix: Correct the settings file; `gate --help` shows the format." % (cfg, e.line, e.message)]
+    doc = Doc(text)
+    acs = count_acs(doc)
+    return 0, ["%s: %d words (ceiling %d), %d AC%s" % (path, count_words(doc), config["max_words"], acs, "" if acs == 1 else "s")]
+
+
 USAGE = ("usage: gate [--repo ROOT] <spec.md> [<spec.md> ...]\n"
          "       gate --risk [--repo ROOT] [--findings FILE ...] <spec.md> [<spec.md> ...]\n"
+         "       gate --counts [--repo ROOT] <spec.md> [<spec.md> ...]\n"
          "       gate --gates")
 
 
 def parse_args(argv):
-    opts = {"mode": "gate", "repo": None, "paths": [], "risk": False, "findings": []}
+    opts = {"mode": "gate", "repo": None, "paths": [], "risk": False, "findings": [], "counts": False}
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -1365,6 +1399,10 @@ def parse_args(argv):
             return opts
         if arg == "--risk":
             opts["risk"] = True
+            i += 1
+            continue
+        if arg == "--counts":
+            opts["counts"] = True
             i += 1
             continue
         if arg == "--findings" or arg.startswith("--findings="):
@@ -1398,6 +1436,8 @@ def parse_args(argv):
         raise UsageError("--repo %r is not a directory" % opts["repo"])
     if not opts["paths"]:
         raise UsageError("no spec files given")
+    if opts["counts"] and (opts["risk"] or opts["findings"]):
+        raise UsageError("--counts can't be combined with --risk or --findings")
     if opts["findings"] and not opts["risk"]:
         raise UsageError("--findings needs --risk")
     if opts["findings"] and len(opts["paths"]) > 1:
@@ -1429,7 +1469,10 @@ def main(argv=None):
         return 0
     worst = 0
     for path in opts["paths"]:
-        code, lines = gate_file(path, opts["repo"], opts["risk"], opts["findings"])
+        if opts["counts"]:
+            code, lines = counts_file(path, opts["repo"])
+        else:
+            code, lines = gate_file(path, opts["repo"], opts["risk"], opts["findings"])
         for line in lines:
             print(line)
         worst = max(worst, code)

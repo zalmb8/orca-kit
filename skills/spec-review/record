@@ -14,18 +14,25 @@ review-record.md next to this script):
   {
     "spec": "<slug>",
     "risk": {"tier": "low" | "high", "risks": [<risk>, ...], "reasons": [<text>, ...]},
-    "sign_off": null | {"signed_off_by": <name>, "signed_off_on": "YYYY-MM-DD", "risks": [<risk>, ...]}
+    "sign_off": null | {"signed_off_by": <name>, "signed_off_on": "YYYY-MM-DD", "risks": [<risk>, ...]},
+    "passes": [{"findings": [<finding>, ...], "open_blockers": <n>}, ...]
   }
 
-Every field is required; only `sign_off` may be null; unknown fields are
-rejected. Later releases add their own fields (gate results, passes,
-questions) to this list.
+spec, risk and sign_off are required; only `sign_off` may be null. `passes`
+(v0.4) is optional, so a v0.3 record stays valid: one entry per review pass,
+at most 3, each holding that pass's findings (each valid under the findings
+validator, ids unique, no two with the same rule, location and risk, as
+`findings --merge` leaves them) and its count of blockers. Every risk a
+finding in the last pass names must be in risk.risks. Unknown fields are
+rejected. Later releases add their own fields (gate results, questions) to
+this list.
 
 Prints one line per problem:
   <file>:<line>: error [<rule>] <field>: <problem>. Fix: <what to do>.
 then one summary line per file:
   <file>: ok, risk high (migration), signed off by <name> on <date>
   <file>: ok, risk low, no sign-off
+  <file>: ok, risk low, no sign-off, 1 pass: 3 findings: 1 blocker (0 decision), 1 warning, 1 nit
   <file>: <n> problem(s)
 
 This script only reads records. It never writes one, and never fills in a
@@ -38,14 +45,31 @@ Python 3 standard library only; no install step.
 """
 
 import datetime
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_sibling(name):
+    loader = importlib.machinery.SourceFileLoader("spec_review_" + name, os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+FINDINGS = load_sibling("findings")
+
 RISKS = ("auth", "security-boundary", "data-model", "migration", "billing", "public-api", "breaking-change")
 TIERS = ("low", "high")
 FIELDS = ("spec", "risk", "sign_off")
+OPTIONAL_FIELDS = ("passes",)
+PASS_FIELDS = ("findings", "open_blockers")
+MAX_PASSES = 3
 RISK_FIELDS = ("tier", "risks", "reasons")
 SIGN_OFF_FIELDS = ("signed_off_by", "signed_off_on", "risks")
 
@@ -53,10 +77,13 @@ SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 RULE_TEXT = {
-    "record.fields": "the record has exactly " + ", ".join(FIELDS),
+    "record.fields": "the record has exactly " + ", ".join(FIELDS) + ", and optionally " + ", ".join(OPTIONAL_FIELDS),
     "record.spec": "spec is the slug the file is named after (<slug>.json)",
     "record.risk": "risk has tier (low | high), risks (unique, from the risk list; empty exactly when tier is low) and reasons (text; non-empty when tier is high)",
     "record.sign-off": "sign_off is null, or has signed_off_by (a name), signed_off_on (a real YYYY-MM-DD date) and risks (the non-empty, unique risks shown to the person signing)",
+    "record.passes": "passes, if present, is a list of 1 to %d passes, each with findings (valid findings, unique ids, "
+                     "no duplicate rule, location and risk) and open_blockers (its number of blockers); "
+                     "the last pass's risks are in risk.risks" % MAX_PASSES,
 }
 
 USAGE = ("usage: record <specs/reviews/<slug>.json> [...]\n"
@@ -103,13 +130,13 @@ def check_record(data, text, stem):
         out.append((line_of(text, name), rule, field, problem, fix))
 
     missing = [f for f in FIELDS if f not in data]
-    extra = sorted(f for f in data if f not in FIELDS)
+    extra = sorted(f for f in data if f not in FIELDS + OPTIONAL_FIELDS)
     if missing:
         out.append((1, "record.fields", "record", "missing " + ", ".join(missing),
                     "add %s; sign_off is null until the user signs off" % ", ".join(missing)))
     if extra:
         bad(extra[0], "record.fields", "record", "unknown field%s %s" % ("s" if len(extra) > 1 else "", ", ".join(extra)),
-            "remove it; this release's record has only " + ", ".join(FIELDS))
+            "remove it; this release's record has only " + ", ".join(FIELDS + OPTIONAL_FIELDS))
 
     if "spec" in data:
         spec = data["spec"]
@@ -183,7 +210,77 @@ def check_record(data, text, stem):
                 if problem:
                     bad("risks", "record.sign-off", "sign_off.risks", "risks " + problem,
                         "list exactly the risks shown to the user when they said yes")
+    if "passes" in data:
+        out.extend(check_passes(data, text))
     return sorted(out, key=lambda p: p[0])
+
+
+def check_passes(data, text):
+    """[(line, rule, field, problem, fix)] for the optional passes list."""
+    out = []
+    line = line_of(text, "passes")
+
+    def bad(field, problem, fix):
+        out.append((line, "record.passes", field, problem, fix))
+
+    passes = data["passes"]
+    if not isinstance(passes, list) or not 1 <= len(passes) <= MAX_PASSES:
+        bad("passes", "passes is %s, not a list of 1 to %d passes" % (show(passes), MAX_PASSES),
+            "give one {\"findings\": [...], \"open_blockers\": <n>} per review pass, or leave passes out")
+        return out
+    for i, p in enumerate(passes, 1):
+        field = "passes[%d]" % i
+        if not isinstance(p, dict):
+            bad(field, "pass %d is %s, not an object" % (i, show(p)), "give {\"findings\": [...], \"open_blockers\": <n>}")
+            continue
+        missing = [f for f in PASS_FIELDS if f not in p]
+        extra = sorted(f for f in p if f not in PASS_FIELDS)
+        if missing:
+            bad(field, "pass %d is missing %s" % (i, ", ".join(missing)), "add findings and open_blockers")
+        if extra:
+            bad(field, "pass %d has unknown field%s %s" % (i, "s" if len(extra) > 1 else "", ", ".join(extra)),
+                "keep only findings and open_blockers")
+        findings = p.get("findings")
+        if "findings" in p and not isinstance(findings, list):
+            bad(field + ".findings", "findings is %s, not a list" % show(findings),
+                "give the array `findings --merge` printed for this pass")
+            findings = None
+        valid = []
+        if isinstance(findings, list):
+            ids = {}
+            keys = {}
+            for n, f in enumerate(findings, 1):
+                ftext = json.dumps(f, ensure_ascii=False)
+                problems = FINDINGS.check_finding(f, ftext, 0, len(ftext))
+                if problems:
+                    _, rule, problem, _ = problems[0]
+                    bad("%s.findings[%d]" % (field, n), "finding %d is not valid (%s: %s)" % (n, rule, problem),
+                        "record only findings that passed the findings validator")
+                    continue
+                valid.append(f)
+                if f["id"] in ids:
+                    bad("%s.findings[%d]" % (field, n), "id %s is already used by finding %d" % (show(f["id"]), ids[f["id"]]),
+                        "record the array `findings --merge` printed, which has unique ids")
+                else:
+                    ids[f["id"]] = n
+                key = FINDINGS.dedupe_key(f)
+                if key in keys:
+                    bad("%s.findings[%d]" % (field, n), "finding %d has the same rule, location and risk as finding %d" % (n, keys[key]),
+                        "record the deduplicated array `findings --merge` printed")
+                else:
+                    keys[key] = n
+            if len(valid) == len(findings) and "open_blockers" in p:
+                blockers = sum(1 for f in valid if f["severity"] == "blocker")
+                ob = p["open_blockers"]
+                if not (isinstance(ob, int) and not isinstance(ob, bool)) or ob != blockers:
+                    bad(field + ".open_blockers", "open_blockers is %s, but the pass has %d blocker%s" % (
+                        show(ob), blockers, "" if blockers == 1 else "s"), "set it to the number of blocker findings in the pass")
+        if i == len(passes) and isinstance(data.get("risk"), dict) and isinstance(data["risk"].get("risks"), list):
+            named = sorted({f["risk"] for f in valid if f["risk"] is not None} - set(data["risk"]["risks"]), key=RISKS.index)
+            if named:
+                bad(field + ".findings", "findings name risk %s, which risk.risks doesn't list" % ", ".join(named),
+                    "set risk to what `gate --risk --findings` reported for these findings")
+    return out
 
 
 def load(path):
@@ -218,6 +315,11 @@ def check_file(path):
     tier = "risk high (%s)" % ", ".join(risk["risks"]) if risk["tier"] == "high" else "risk low"
     so = data["sign_off"]
     signed = "signed off by %s on %s" % (so["signed_off_by"], so["signed_off_on"]) if so else "no sign-off"
+    passes = data.get("passes")
+    if passes:
+        last = passes[-1]["findings"]
+        signed += ", %d pass%s: %d finding%s: %s" % (len(passes), "" if len(passes) == 1 else "es", len(last),
+                                                   "" if len(last) == 1 else "s", FINDINGS.tally_of(last))
     lines.append("%s: ok, %s, %s" % (path, tier, signed))
     return 0, lines, data
 

@@ -3,8 +3,13 @@
 
 Usage:
   findings <findings.json> [<findings.json> ...]
+  findings --merge <findings.json> [<findings.json> ...]
   findings --rules
 
+  --merge       Validate every file, then print one JSON array on stdout: the
+                valid findings of all the files, in order, deduplicated
+                (below). Everything else goes to stderr. Used to combine the
+                five reviewers' outputs into one review pass (v0.4).
   --rules       List the rules each finding is checked against, and exit.
 
 A findings file is a JSON array of finding objects, in the format of
@@ -24,6 +29,23 @@ A rejected finding is dropped, never repaired or guessed at.
 
 Exit codes: 0 every finding in every file is valid, 1 a finding is rejected,
 2 a usage error or a file that isn't a JSON array.
+
+--merge. Files are read in the order given; a rejected finding, or every
+finding of a file that can't be read or isn't a JSON array, is dropped and
+reported, and the merge goes on with the rest. A finding whose id is already
+used by a finding in an earlier file is rejected under finding.id. Two
+findings are duplicates when they have the same rule, the same location (the
+section, ignoring case and runs of whitespace; the same line, or both null;
+the same ref, ignoring case, or both null) and the same risk, so a merge never
+drops a risk. Of each set of duplicates the most severe is kept (blocker,
+then warning, then nit), then a decision over a fix, then the first given;
+it takes the place of the first of the set. Each dropped duplicate is
+reported on stderr as
+  <file>:<line>: note [merge.duplicate] finding #<n> (<id>): same rule and location as <id> in <file>, dropped.
+then one line:
+  merged: <n> findings from <f> files: <b> blocker (<d> decision), <w> warning, <k> nit; <u> duplicates dropped, <r> rejected
+The exit code is the worst of the files' (0, 1 or 2), or 1 for an id clash;
+stdout is always a valid findings array.
 
 Python 3 standard library only; no install step.
 """
@@ -84,6 +106,7 @@ def rule_of(field):
 
 
 USAGE = ("usage: findings <findings.json> [<findings.json> ...]\n"
+         "       findings --merge <findings.json> [<findings.json> ...]\n"
          "       findings --rules")
 
 
@@ -223,17 +246,23 @@ def check_finding(finding, text, start, end):
 
 def check_file(path):
     """(exit code, output lines) for one findings file."""
+    code, lines, _ = check_file_kept(path)
+    return code, lines
+
+
+def check_file_kept(path):
+    """(exit code, output lines, [(n, finding, line)] of the findings that passed)."""
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
     except (OSError, UnicodeDecodeError) as e:
-        return 2, ["%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a findings .json file." % (path, e)]
+        return 2, ["%s:1: error [usage] file: can't read the file (%s). Fix: Pass the path to a findings .json file." % (path, e)], []
     try:
         items = elements(text)
     except ValueError as e:
-        return 2, ["%s:%d: error [parse] file: not JSON (%s). Fix: Correct the file so it parses as a JSON array of findings." % (path, getattr(e, "lineno", 1), getattr(e, "msg", e))]
+        return 2, ["%s:%d: error [parse] file: not JSON (%s). Fix: Correct the file so it parses as a JSON array of findings." % (path, getattr(e, "lineno", 1), getattr(e, "msg", e))], []
     except TypeError as e:
-        return 2, ["%s:1: error [parse] file: %s. Fix: Wrap the findings in a JSON array." % (path, e)]
+        return 2, ["%s:1: error [parse] file: %s. Fix: Wrap the findings in a JSON array." % (path, e)], []
 
     lines = []
     kept = []
@@ -256,16 +285,96 @@ def check_file(path):
         if problems:
             rejected += 1
         else:
-            kept.append(finding)
+            kept.append((n, finding, line_of(text, start)))
 
-    count = dict((s, sum(1 for f in kept if f["severity"] == s)) for s in SEVERITIES)
-    decisions = sum(1 for f in kept if f["severity"] == "blocker" and f["kind"] == "decision")
-    tally = "%d blocker (%d decision), %d warning, %d nit" % (count["blocker"], decisions, count["warning"], count["nit"])
+    tally = tally_of([f for _, f, _ in kept])
     if rejected:
         lines.append("%s: %d rejected, %d kept: %s" % (path, rejected, len(kept), tally))
     else:
         lines.append("%s: ok, %d finding%s: %s" % (path, len(kept), "" if len(kept) == 1 else "s", tally))
-    return (1 if rejected else 0), lines
+    return (1 if rejected else 0), lines, kept
+
+
+def tally_of(findings):
+    count = dict((s, sum(1 for f in findings if f["severity"] == s)) for s in SEVERITIES)
+    decisions = sum(1 for f in findings if f["severity"] == "blocker" and f["kind"] == "decision")
+    return "%d blocker (%d decision), %d warning, %d nit" % (count["blocker"], decisions, count["warning"], count["nit"])
+
+
+# ---------------------------------------------------------------------------
+# --merge: combine reviewers' files into one deduplicated array.
+# ---------------------------------------------------------------------------
+
+MERGE_RULE_TEXT = {
+    "merge.duplicate": "note: same rule, location (section, line, ref) and risk as a kept finding; the most severe, "
+                       "then a decision, then the first is kept",
+}
+
+
+def _norm(text):
+    return " ".join(text.split()).casefold()
+
+
+def dedupe_key(finding):
+    """Findings with equal keys are duplicates: rule, location and risk (a valid finding only)."""
+    loc = finding["location"]
+    return (finding["rule"], _norm(loc["section"]), loc["line"],
+            None if loc["ref"] is None else _norm(loc["ref"]), finding["risk"])
+
+
+def _preference(finding, order):
+    return (SEVERITIES.index(finding["severity"]), 0 if finding["kind"] == "decision" else 1, order)
+
+
+def dedupe(findings):
+    """(kept, [(dropped, kept instead)]) for valid findings, in order. Deterministic."""
+    groups = {}
+    keys = []
+    for order, f in enumerate(findings):
+        key = dedupe_key(f)
+        if key not in groups:
+            groups[key] = []
+            keys.append(key)
+        groups[key].append((order, f))
+    kept, dropped = [], []
+    for key in keys:
+        best = min(groups[key], key=lambda of: _preference(of[1], of[0]))
+        kept.append(best[1])
+        dropped.extend((f, best[1]) for order, f in groups[key] if order != best[0])
+    return kept, dropped
+
+
+def merge(paths):
+    """(exit code, merged findings, stderr lines) for `--merge`."""
+    worst, lines, entries, seen_ids, rejected = 0, [], [], {}, 0
+    for path in paths:
+        code, file_lines, kept = check_file_kept(path)
+        worst = max(worst, code)
+        lines.extend(file_lines)
+        if code == 1:
+            m = re.search(r": (\d+) rejected, ", file_lines[-1])
+            rejected += int(m.group(1)) if m else 0
+        for n, finding, line in kept:
+            fid = finding["id"]
+            if fid in seen_ids:
+                lines.append("%s:%d: error [finding.id] finding #%d (%s): id %s is already used in %s. "
+                             "Fix: Give each finding an id unique across the files merged, such as \"<reviewer>-<n>\"." % (
+                                 path, line, n, fid, show(fid), seen_ids[fid]))
+                rejected += 1
+                worst = max(worst, 1)
+                continue
+            seen_ids[fid] = path
+            entries.append((finding, path, n, line))
+    where = dict((id(f), (p, n, line)) for f, p, n, line in entries)
+    kept, dropped = dedupe([f for f, _, _, _ in entries])
+    for f, instead in dropped:
+        p, n, line = where[id(f)]
+        lines.append("%s:%d: note [merge.duplicate] finding #%d (%s): same rule and location as %s in %s, dropped." % (
+            p, line, n, f["id"], instead["id"], where[id(instead)][0]))
+    lines.append("merged: %d finding%s from %d file%s: %s; %d duplicate%s dropped, %d rejected" % (
+        len(kept), "" if len(kept) == 1 else "s", len(paths), "" if len(paths) == 1 else "s", tally_of(kept),
+        len(dropped), "" if len(dropped) == 1 else "s", rejected))
+    return worst, kept, lines
 
 
 def parse_args(argv):
@@ -277,6 +386,9 @@ def parse_args(argv):
         if arg == "--rules":
             opts["mode"] = "rules"
             return opts
+        if arg == "--merge":
+            opts["mode"] = "merge"
+            continue
         if arg == "--":
             opts["paths"].extend(argv[i + 1:])
             break
@@ -301,7 +413,16 @@ def main(argv=None):
     if opts["mode"] == "rules":
         for rule_id, text in RULE_TEXT.items():
             print("  %-26s error   %s" % (rule_id, text))
+        print("with --merge:")
+        for rule_id, text in MERGE_RULE_TEXT.items():
+            print("  %-26s note    %s" % (rule_id, text[len("note: "):]))
         return 0
+    if opts["mode"] == "merge":
+        code, kept, lines = merge(opts["paths"])
+        for line in lines:
+            sys.stderr.write(line + "\n")
+        sys.stdout.write(json.dumps(kept, indent=2, ensure_ascii=False) + "\n")
+        return code
     worst = 0
     for path in opts["paths"]:
         code, lines = check_file(path)

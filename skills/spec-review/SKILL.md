@@ -7,18 +7,17 @@ description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally 
 
 Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates and the risk step have run, the user has every result with its lines, a high-risk spec has the user's own sign-off or is reported as not passing, and every finding the review uses has passed the findings validator.
 
-## Status (v0.3)
+## Status (v0.4)
 
-Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), and the findings format with its validator (`findings`). The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
+Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), the findings format with its validator (`findings`), and the five advisory reviewers with their merge (`findings --merge`). The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
 
 | Step | Planned in |
 |---|---|
-| The five reviewer agents (`spec-review-ambiguity`, `-architecture`, `-security`, `-blast-radius`, `-slicer`) | v0.4 |
-| Bounded revision loop | v0.5 |
-| Human-in-the-loop pauses and the review summary | v0.6 |
+| Bounded revision loop: blockers handed back to the author, reviewers re-run, at most 3 passes | v0.5 |
+| Human-in-the-loop pauses (decision findings, high risk, non-convergence, skim test) and the review summary | v0.6 |
 | Graduating repeated findings (`findings --stats`) | v0.7 |
 
-When the user asks to review a spec, run `gate --risk` (below) and report the gates' and the risk step's results; if the spec is high risk and not signed off, ask for the sign-off as [Risk and sign-off](#risk-and-sign-off) says. Say plainly that the advisory reviewers, the revision loop and the review summary aren't available yet, and don't run a review that imitates them. Passing `gate --risk` means only that: never report a spec as reviewed or ready to build.
+When the user asks to review a spec, run the [review](#running-a-review) below: the hard gates, the five reviewers, the merge, the review record and the risk step, in that order. Say plainly that the revision loop, the pauses and the review summary aren't available yet, and don't imitate them: don't revise the spec, re-run the reviewers in a loop, or answer a `decision` finding yourself. A review never reports a spec as ready to build; it reports what the gates, the risk step and the reviewers found.
 
 ## Core rules
 
@@ -73,12 +72,27 @@ Patterns are Python regexes; quote them in single quotes. Risk terms are lowerca
 - **Tier.** A spec is **high** risk when it names a path or term for `auth`, `security-boundary`, `data-model`, `migration`, `billing`, `public-api` or `breaking-change`, or when a finding passed with `--findings` has a non-null `risk`. Otherwise it is **low**, and needs no sign-off.
 - **Output.** After the gates' result line: one `warning [risk.<risk>]` line per reason, then `<file>: risk low`, or `<file>: risk high: <risks>;` followed by `signed off by <name> on <date>`, `sign-off needed` or `sign-off stale (signed for <risks>)`, with a `risk.sign-off` error for the last two.
 - **Exit.** 0 when the gates pass and the spec is low risk or signed off; 1 when a gate fails or a sign-off is missing or stale; 2 for the gate's own exit-2 cases, a findings file the validator rejects (the tier isn't computed from partial findings), or a review record that `record` rejects.
-- **Findings.** Pass every reviewer findings file with `--findings` (one spec per run). Until the reviewer agents exist (v0.4), that is only a findings file the user gives you.
+- **Findings.** Pass the merged reviewer findings (`findings --merge`) with `--findings` (repeatable, one spec per run), as [Running a review](#running-a-review) does; a findings file the user gives you works the same way.
 - **Sign-off.** A high-risk spec passes only with a sign-off in `specs/reviews/<slug>.json` whose risks equal the current risks; a changed risk set makes an old sign-off stale. No script ever writes that file. **Only the user's explicit yes fills it in**: show them the risks and every reason line, ask whether they sign off on exactly those risks and under what name, and only on a clear yes write the record as risk.md says (their name, today's date, the risks shown). Never sign off yourself, never reuse an earlier yes for a different risk set, and never take a name from git config or the spec. On a no, the spec doesn't pass; say what would change that.
 - **Tuning.** A repo can replace any risk's terms or paths in `.orca-kit/spec-review.yml` (`risk_terms`, `risk_paths`); a false high is a settings change for the user to make, never a reason to skip the sign-off.
 - If `python3` isn't available, say the risk step didn't run; never call a spec low risk on a by-hand reading.
 
-`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record specs/reviews/<slug>.json` validates a review record: `<file>:<line>: error [record.<rule>] <field>: <problem>. Fix: …`, then `<file>: ok, risk high (migration), signed off by <name> on <date>`. It exits 0 when valid, 1 on a rule failure, 2 for a usage error or a file that isn't a JSON object. `--rules` lists its rules. Run it after writing a record.
+`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record specs/reviews/<slug>.json` validates a review record: `<file>:<line>: error [record.<rule>] <field>: <problem>. Fix: …`, then `<file>: ok, risk high (migration), signed off by <name> on <date>`. It exits 0 when valid, 1 on a rule failure, 2 for a usage error or a file that isn't a JSON object. `--rules` lists its rules; a record's optional `passes` (v0.4) is checked under `record.passes`. Run it after writing a record.
+
+## Running a review
+
+1. **Gates.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate specs/<slug>.md`. If it exits 2, stop and report why. A gate failure is reported, and the reviewers still run: their findings help the author fix it.
+2. **Counts.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate --counts specs/<slug>.md` and keep its one line for the slicer.
+3. **Reviewers.** Launch all five as subagents **in parallel, in one message**, each in a fresh context: `orca-kit:spec-review-ambiguity`, `orca-kit:spec-review-architecture`, `orca-kit:spec-review-security`, `orca-kit:spec-review-blast-radius` and `orca-kit:spec-review-slicer`. The prompt is exactly `Spec: specs/<slug>.md` and `Repo root: <absolute repo root>` on two lines, plus `Counts: <the counts line>` for the slicer. Nothing else: no summary, no conversation, no reason the spec was written, no hint about what to look for. Each agent holds its own rubric, rule keys and context list (`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/reviewers.md` lists them).
+4. **Save and merge.** Save each reply exactly as returned to its own file outside the repo, such as `$TMPDIR/spec-review/<slug>/<reviewer>.json`; never edit a reply. Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings --merge <the five files> > $TMPDIR/spec-review/<slug>/merged.json`. It validates every file, drops and reports each rejected finding (and every finding of a reply that isn't a bare JSON array), drops duplicates by rule and location, and prints the merged array. Tell the user each finding that was dropped as invalid and why; a duplicate drop needs no mention. If a reviewer's whole reply was rejected, you may re-run that one reviewer once, fresh; say so.
+5. **Risk.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate --risk --findings $TMPDIR/spec-review/<slug>/merged.json specs/<slug>.md`. Its exit code is the review's result: 0 passes, 1 means a gate failed or a sign-off is needed (see [Risk and sign-off](#risk-and-sign-off)). Findings change only the risk tier, through their `risk`.
+6. **Record.** Write `specs/reviews/<slug>.json` (format in `risk.md`): `spec`, `risk` as step 5 reported it, `sign_off` kept from an existing record (or `null`), and `passes` with one entry, `{"findings": <the merged array>, "open_blockers": <its blocker count>}`, replacing any earlier `passes`. Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record` on it and fix only what you wrote wrongly; then re-run step 5, which reads the record for the sign-off. Writing the findings never writes a sign-off.
+7. **Report.** Show the gates' and the risk step's lines, then the findings grouped by severity, each with its reviewer, rule, location, evidence, question and suggested fix:
+   - **Blockers** are open problems for the author to fix in the spec through `orca-kit:spec`. List the `decision` ones as questions for the user, with the options; never pick one.
+   - **Warnings and nits** are comments: show them, never loop on them.
+   - Nothing advisory fails the review: an LLM finding never turns a pass into a fail, and the result is step 5's exit code alone. Say how many blockers are open, and that the loop that would hand them back is not available yet.
+
+If subagents can't be launched, say the reviewers didn't run and report only the gates and the risk step; never write findings yourself in a reviewer's place.
 
 ## Findings
 
@@ -117,6 +131,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 - It prints one line per problem, `<file>:<line>: error [<rule>] finding #<n> (<id>): <problem>. Fix: <what to do>.`, then a summary of the findings that passed: `<file>: ok, 4 findings: 2 blocker (1 decision), 1 warning, 1 nit`, or `<file>: 1 rejected, 3 kept: …` when any were dropped.
 - It exits 0 when every finding is valid, 1 when any is rejected, and 2 for a usage error or a file that isn't a JSON array.
 - `--rules` lists the rules it checks.
+- `--merge <file> ...` combines reviewers' files into one validated, deduplicated array on stdout, with every drop reported on stderr; `reviewers.md` has the exact duplicate rule.
 - If `python3` isn't available, check each finding by hand against the list above and tell the user the validator didn't run.
 
 ## Non-goals
@@ -129,8 +144,11 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 
 ## Bundled files
 
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate`: the hard gates.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings`: the findings validator.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate`: the hard gates, the risk step (`gate --risk`) and the slicer's counts (`gate --counts`).
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings`: the findings validator and merge (`findings --merge`).
+- `${CLAUDE_PLUGIN_ROOT}/agents/spec-review-*.md`: the five reviewer agents, invoked as `orca-kit:spec-review-<reviewer>`.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/reviewers.md`: the reviewers' context and rule keys, the merge's duplicate rule, the record's `passes`, and the seeded examples.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/examples/`: a small fake repo with six specs, each seeding one problem, and `expected.json` naming the reviewer and rule that should catch it.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record`: the review record validator.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/risk.md`: the risk classifier's defaults and settings, the review record format, and how to record a sign-off.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings.schema.json`: the findings format as JSON Schema; the validator implements the same rules by hand, and its tests check the two agree.
