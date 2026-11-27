@@ -34,7 +34,7 @@ Build locally with `npm run build` (`tsc -p tsconfig.json`, from `package.json`)
 
 ## Interfaces & Data Contracts
 
-Existing code to build on:
+Existing:
 
 - `src/types.ts` (`Todo`): the shape of every todo; the export's fields come from here.
 - `src/store.ts` (`loadTodos()`): reads all todos from the store.
@@ -42,10 +42,10 @@ Existing code to build on:
 - `src/commands/list.ts`: the closest existing command, to follow for structure and output.
 - `test/commands/list.test.ts`: the test style to follow for the new command.
 
-New contract:
+New:
 
 - CLI: `todo export`, no arguments or flags.
-- Output: a JSON array of `Todo` objects on stdout, with each todo's fields exactly as `Todo` defines them, followed by a newline. Nothing else is written to stdout.
+- stdout: `Todo[]` as JSON, each todo with exactly the fields `Todo` defines, then a newline; nothing else.
 - Tests: `test/commands/export.test.ts`, with one test per acceptance criterion, each named starting with its ID (`AC-1: …`).
 
 ## Behavior & Edge Cases
@@ -55,10 +55,12 @@ New contract:
 - **AC-2:** Given a todo with every field the `Todo` type defines, when the user runs `todo export`, then that todo's JSON object has exactly those fields and values, so fields added to `Todo` later appear without changes to the command.
   verify: `npm test -- test/commands/export.test.ts -t "AC-2:"`
 - **AC-3:** Given any argument or flag (for example `todo export --csv`), when the user runs it, then the usage error is printed to stderr as `src/cli.ts` does for other commands, nothing is written to stdout, and the command exits non-zero.
+  example: `todo export --csv` → nothing on stdout, non-zero exit
   verify: `npm test -- test/commands/export.test.ts -t "AC-3:"`
 - **AC-4:** Given `loadTodos()` throws because the store can't be read or parsed, when the user runs `todo export`, then the error is printed to stderr, nothing is written to stdout, and the command exits non-zero, as `todo list` does.
   verify: `npm test -- test/commands/export.test.ts -t "AC-4:"`
 - **AC-5:** Given the store holds no todos, when the user runs `todo export`, then stdout is `[]` followed by a newline, and the command exits 0.
+  example: `todo export` with an empty store → stdout `[]` and a newline, exit 0
   verify: `npm test -- test/commands/export.test.ts -t "AC-5:"`
 - **AC-6:** Given another `todo` command saves the store while `todo export` reads it, when the export finishes, then its output comes from one `loadTodos()` call: either a complete JSON array or the AC-4 error, never a partial array.
   verify: `npm test -- test/commands/export.test.ts -t "AC-6:"`
@@ -78,6 +80,7 @@ Always:
 - Run `npm run lint`, `npm run typecheck` and `npm test` before calling the work done, and fix what fails.
 - Follow the structure and style of `src/commands/list.ts` and `test/commands/list.test.ts`.
 - Write one test per AC in `test/commands/export.test.ts`, named starting with its ID and a colon (`AC-n: …`).
+- Before the final commit, sync this spec with what the build found (`orca-kit:spec` update) and commit it with the code.
 
 Ask First:
 

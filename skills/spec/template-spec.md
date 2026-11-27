@@ -22,13 +22,22 @@ Non-goals:
 
 ## Interfaces & Data Contracts
 
-<Types, schemas, API signatures and CLI commands that the compiler and tests can check. Link to existing types instead of copying them.>
+<Types, schemas, API signatures and CLI commands that the compiler and tests can check, in two lists. Link to existing types instead of copying them.>
+
+Existing:
+
+- `<repo-relative path>` (`<Symbol>`): <why it matters for the goal>.
+
+New:
+
+- <The new contract in code, in terms of the existing types: a signature, type, schema or CLI usage in backticks or a fenced block, e.g. CLI: `<command> <args>`.>
 
 ## Behavior & Edge Cases
 
 <Every behavior is an acceptance criterion: the happy path first, then one AC per distinct edge-case outcome and invariant. IDs run AC-1, AC-2, … and are never renumbered or reused.>
 
 - **AC-1:** Given <starting state>, when <one action>, then <observable result>.
+  example: `<exact input or command>` → <expected result, with literal output in backticks>
   verify: `<exact command or test that checks it>`
 - **AC-2:** Given <…>, when <…>, then <…>.
   TBD: <what is unknown about the check; allowed only in a draft>

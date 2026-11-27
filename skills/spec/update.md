@@ -4,6 +4,12 @@ Update writes what was learned while building an `accepted` spec back into it: n
 
 Update only records what was learned. It never runs the Verification Gate, never judges whether the build meets the spec, never sets `done` or `superseded`, and never tracks build progress.
 
+## When to run it
+
+- **When the user asks** ("sync the spec", "update the spec with what we learned").
+- **Before the final commit of a build.** When an implementation task for an `accepted` spec is ending, run update before the last commit, and commit the updated spec in the same commit as the code, so the repo never holds code the spec doesn't describe. Every accepted spec's `Always:` list says so (`guardrails.md`), so the building agent sees it even without this skill loaded.
+- **When `check --repo` warns `repo.stale`**: commits since the spec last changed touch the files it links to.
+
 ## 1. Gather discoveries
 
 A discovery is a fact about the feature that the spec doesn't state yet, with a source you can point to. Collect them from:
@@ -11,7 +17,7 @@ A discovery is a fact about the feature that the spec doesn't state yet, with a 
 | Source | What to look for |
 |---|---|
 | The conversation | Edge cases or failures hit while building, choices the user made ("pretty-print it"), contracts that changed, things the user said were wrong in the spec. |
-| Changes since acceptance | Find the commit that accepted the spec: `git log -1 --format=%H -G '^accepted_on:' -- specs/<slug>.md`. Then read `git log --stat <sha>..HEAD` and `git diff <sha> -- <paths>` for every path the spec links to, the test files its `verify:` lines name, and their directories (which catches new files such as the command itself). Include uncommitted changes (`git status`, `git diff`). If the spec was never committed, use the changes the conversation shows. |
+| Changes since acceptance | Find the commit that accepted the spec: `git log -1 --format=%H -G '^accepted_on:' -- specs/<slug>.md`. If that commit also changes files outside `specs/` (acceptance and code were committed together), use its parent, `<sha>^`, as the base instead, so its code counts too; if it has no parent, read it with `git show <sha>`. Then read `git log --stat <base>..HEAD` and `git diff <base> -- <paths>` for every path the spec links to, the test files its `verify:` lines name, and their directories (which catches new files such as the command itself). Include uncommitted changes (`git status`, `git diff`). If the spec was never committed, use the changes the conversation shows. Earlier updates are in that range too: skip what the spec already records. |
 | New or changed tests | Test names and assertions, especially tests named `AC-n: …` that cover a case the edge-case table doesn't list. |
 | New or changed types and schemas | Fields, signatures, CLI flags and output formats as the code now defines them. |
 | Code paths found while building | Error handling, early returns and fallbacks in the linked code (`loadTodos()` returns no todos for a missing file) that decide an edge case. |
@@ -29,9 +35,11 @@ A discovery is a fact about the feature that the spec doesn't state yet, with a 
 | A new edge-case row pointing to an existing AC whose *then* already gives that behavior | No |
 | A new Decision Log entry | No |
 | Interfaces & Data Contracts brought in line with the code (new files, signatures, output details), where no AC or non-goal depends on what changed | No |
+| Moving a `New:` item to `Existing:` once its file exists and states it | No |
+| Bringing a spec written before v0.7 into the current format: `Existing:` and `New:` labels in Interfaces & Data Contracts, the Verification Gate rebuilt from the ACs, the sync rule added to `Always:` | No: the content stays the same. Show the user the sync rule, since it is a new boundary. |
 | Trimming prose that a type, schema or test now states (section 4) | No |
 | Environment & Commands brought in line with the repo's commands | No, unless an AC's `verify:` line changes |
-| Adding an AC (including one a new edge case needs), removing one, or changing one: its Given/When/Then or its `verify:` line | Yes |
+| Adding an AC (including one a new edge case needs), removing one, or changing one: its Given/When/Then, its `example:` lines or its `verify:` line | Yes |
 | Changing or removing an existing edge-case row | Yes: it changes accepted behavior |
 | Adding, removing or changing a Non-goal, or an Always, Ask First or Never rule | Yes |
 | A contract change that an AC or non-goal depends on (a new flag when a non-goal rules flags out) | Yes, together with that AC or non-goal |
@@ -43,7 +51,7 @@ Keep exactly the six template headings, in order. Don't add a changelog, history
 
 - **Edge cases.** Add a row to the edge-case table in the format of `acceptance-criteria.md`, starting with its category (`Invalid input:`, `Failure:`, `State conflict:`, `Empty:`, `Boundary:`) and pointing to the AC that covers it. Say where the behavior comes from when it isn't obvious ("`loadTodos()` returns no todos"). If no existing AC's *then* gives that behavior, the row needs a new AC: propose it, with the next unused ID and a `verify:` line, for re-acceptance. If a `Not applicable:` category now happens, move it from that line into a row.
 - **Decisions.** Add an entry in the format of `guardrails.md` with the next unused ID (one higher than the highest ever used; never reuse a removed one) and `why:`, `rejected:` and `source:` lines. Only the user's choice or a choice the repo now settles counts; a choice you'd make yourself is a question. `source:` is `conversation` for a choice the user made while building, plus the repo paths that implement it, or just the paths for a repo choice. `rejected:` lists only alternatives that were really on the table; `none considered` needs the user's word. Never edit or delete an existing entry. If the user reverses one, rewrite that entry under its own ID with the new decision and why, and add the old choice to its `rejected:`.
-- **Contracts.** Update Interfaces & Data Contracts so it links to the real files, symbols and signatures, following the linking rule in `repo-scan.md`: link by path and symbol, never copy fields or schemas.
+- **Contracts.** Update Interfaces & Data Contracts so it links to the real files, symbols and signatures, following the linking rule in `repo-scan.md`: link by path and symbol, never copy fields or schemas. When a file a `New:` item names now exists and states that contract, move the item to `Existing:` as `` `path` (`Symbol`): why it matters ``.
 - **Verification Gate.** Rebuild it from the ACs, as `acceptance-criteria.md` says, whenever an AC or the whole-suite commands change.
 - **Frontmatter.** Bump `updated` to today. Keep `status: accepted`, `id` and `created`. Change `accepted_by` and `accepted_on` only on a re-acceptance yes.
 
@@ -68,7 +76,7 @@ An accepted spec was accepted as written. Before writing any change marked "Yes"
 ## 6. Check, then report
 
 1. Keep the spec's text from before the update.
-2. After writing, run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check specs/<slug>.md`. It must print `ok (accepted)` and exit 0.
+2. After writing, run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --repo . specs/<slug>.md` from the repo root. It must print `ok (accepted)` and exit 0. Fix each `repo.paths` and `repo.commands` warning the code answers; a `repo.stale` warning clears once the spec is committed with the code.
 3. Fix what fails: formats, a missing `why:` or `source:` line, the gate, a section over its word budget (trim further, as section 4 allows). Never fix an error by deleting an AC, an edge-case row, a non-goal, a boundary or a decision, or by guessing an answer. Ask the user about anything the spec and repo can't answer.
 4. If it still fails, restore the text from step 1, so an accepted spec is never left failing the check, and report why.
 5. **Report** the path, each discovery and where it went (with its AC or D ID), what was trimmed, each gated change and the user's answer, any discovery left out and why, and the checker's result.
@@ -82,4 +90,6 @@ An accepted spec was accepted as written. Before writing any change marked "Yes"
 - No AC, edge-case row, non-goal or Always / Ask First / Never rule changed without the user's explicit yes.
 - No AC or decision ID was renumbered or reused.
 - Every trim replaced prose with a link to a file that exists and states it.
+- Every `New:` item whose file now exists and states it moved to `Existing:`.
 - No `TBD:` lines and no open questions; the checker exits 0.
+- The updated spec goes in the same commit as the code it describes.

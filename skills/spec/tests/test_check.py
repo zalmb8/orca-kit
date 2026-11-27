@@ -10,8 +10,10 @@ import importlib.machinery
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
@@ -89,6 +91,20 @@ FIXTURE_EXPECTATIONS = {
     # Parse errors.
     "bad-frontmatter-nested": (2, {("error", "parse")}),
     "bad-frontmatter-unclosed": (2, {("error", "parse")}),
+    # v0.7: the Verification Gate matches the ACs and Environment & Commands.
+    "accepted-gate-mismatch": (1, {("error", "gate.matches-acs")}),
+    "accepted-gate-suite": (1, {("error", "gate.suite")}),
+    # v0.7: edge-case categories, an error at accepted and a warning at draft.
+    "accepted-missing-category": (1, {("error", "edge.categories")}),
+    "draft-missing-category": (0, {("warning", "edge.categories")}),
+    # v0.7: heuristics are warnings.
+    "accepted-nongoal-no-path": (0, {("warning", "nongoal.path")}),
+    "accepted-verify-runner": (0, {("warning", "verify.runner")}),
+    # v0.7: concrete examples and typed contracts.
+    "accepted-bad-example": (1, {("error", "ac.example")}),
+    "accepted-old-contracts": (1, {("error", "contract.labels")}),
+    "accepted-contract-format": (1, {("error", "contract.format")}),
+    "accepted-no-contracts": (1, {("error", "contract.items")}),
 }
 
 
@@ -209,7 +225,7 @@ class UpdateDoneCriterion(unittest.TestCase):
     def test_prose_trimmed_to_links(self):
         before = read(example("accepted"))
         after = read(os.path.join(EXAMPLES, "updated", NAME))
-        trimmed = "- Output: a JSON array of `Todo` objects on stdout"
+        trimmed = "- stdout: `Todo[]` as JSON"
         self.assertIn(trimmed, before)
         self.assertNotIn(trimmed, after)
         interfaces = self.after.section("Interfaces & Data Contracts")
@@ -360,6 +376,46 @@ class Rules(unittest.TestCase):
         text = read(example("draft")).replace("- **AC-2:**", "- **AC-1:**")
         self.assertEqual(self.rules_for(text), {("error", "ac.format")})
 
+    def test_gate_missing_and_out_of_order(self):
+        text = read(example("accepted"))
+        ac2 = '- AC-2: `npm test -- test/commands/export.test.ts -t "AC-2:"`\n'
+        missing = text.replace(ac2, "")
+        self.assertEqual(self.rules_for(missing), {("error", "gate.matches-acs")})
+        swapped = missing.replace("- AC-3:", ac2 + "- AC-3:", 1).replace("- AC-1:", "- AC-0:", 1)
+        found = self.rules_for(swapped)
+        self.assertEqual(found, {("error", "gate.matches-acs")})
+
+    def test_gate_tbd_must_stay_tbd_in_a_draft(self):
+        text = read(example("draft")).replace(
+            "- AC-6: TBD: the repo has no test harness", "- AC-6: `npm test` the repo has no test harness")
+        self.assertEqual(self.rules_for(text), {("error", "gate.matches-acs")})
+
+    def test_not_applicable_line_covers_a_category(self):
+        text = read(example("accepted"))
+        row = next(l for l in text.splitlines() if l.startswith("| State conflict:"))
+        text = text.replace(row + "\n", "").replace(
+            "\n## Boundaries", "\nNot applicable: state conflicts (the export only reads the store).\n\n## Boundaries", 1)
+        self.assertEqual(self.rules_for(text), set())
+
+    def test_example_arrow_inside_code_doesnt_count(self):
+        text = read(example("accepted")).replace(
+            "  example: `todo export` with an empty store → stdout `[]` and a newline, exit 0",
+            "  example: `a -> b`")
+        self.assertEqual(self.rules_for(text), {("error", "ac.example")})
+
+    def test_draft_contracts_may_be_tbd(self):
+        text = read(example("draft"))
+        start = text.index("## Interfaces & Data Contracts")
+        end = text.index("## Behavior & Edge Cases")
+        text = text[:start] + "## Interfaces & Data Contracts\n\nTBD.\n\n" + text[end:]
+        self.assertEqual(self.rules_for(text), set())
+
+    def test_fenced_contract_counts_as_code(self):
+        text = read(example("accepted")).replace(
+            "- CLI: `todo export`, no arguments or flags.",
+            "- CLI usage:\n\n  ```\n  todo export\n  ```")
+        self.assertEqual(self.rules_for(text), set())
+
     def test_draft_ac_without_verify_or_tbd(self):
         text = read(example("draft")).replace(
             "  TBD: the repo has no test harness for concurrent processes; how should this be checked?\n", "", 1)
@@ -368,3 +424,139 @@ class Rules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Section(unittest.TestCase):
+    """v0.7: --section prints one section, so agents can load only what they need."""
+
+    def test_prints_one_section(self):
+        result = run("--section", "Verification Gate", example("accepted"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("## Verification Gate\n\nPer acceptance criterion:\n"))
+        self.assertTrue(result.stdout.endswith("- `npm test`\n"))
+        self.assertNotIn("## Boundaries", result.stdout)
+
+    def test_stops_at_the_next_section(self):
+        result = run("--section", "Goal & Non-Goals", example("accepted"))
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("## Environment", result.stdout)
+        self.assertTrue(result.stdout.rstrip().endswith("(`src/store.ts`)."))
+
+    def test_works_on_an_idea(self):
+        self.assertEqual(run("--section", "Open Questions", example("idea")).returncode, 0)
+
+    def test_missing_section_is_a_usage_error(self):
+        result = run("--section", "Nope", example("accepted"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Verification Gate", result.stderr)
+
+    def test_one_file_only_and_no_other_options(self):
+        self.assertEqual(run("--section", "Goal & Non-Goals", example("accepted"), example("draft")).returncode, 2)
+        self.assertEqual(run("--section", "Goal & Non-Goals", "--as", "accepted", example("draft")).returncode, 2)
+
+
+TODO_REPO = {
+    "package.json": '{"scripts": {"build": "tsc -p tsconfig.json", "lint": "eslint .", '
+                    '"typecheck": "tsc --noEmit", "test": "vitest run"}}\n',
+    "src/types.ts": "export interface Todo { id: number; text: string; done: boolean }\n",
+    "src/store.ts": "export function loadTodos(): Todo[] { return []; }\n",
+    "src/cli.ts": "// registers commands\n",
+    "src/commands/list.ts": "export function listTodos() {}\n",
+    "test/commands/list.test.ts": "// list tests\n",
+    ".github/workflows/ci.yml": "steps: []\n",
+}
+
+
+class Repo(unittest.TestCase):
+    """v0.7: --repo checks links, commands and staleness against the target repo, as warnings."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root)
+        for path, text in TODO_REPO.items():
+            self.write(path, text)
+        self.spec = os.path.join(self.root, "specs", NAME)
+        self.write(os.path.join("specs", NAME), read(example("accepted")))
+
+    def write(self, path, text):
+        full = os.path.join(self.root, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def check(self, spec=None):
+        result = run("--repo", self.root, spec or self.spec)
+        return result, {(p["sev"], p["rule"]) for p in problems(result.stdout)}
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.root, "-c", "user.name=t", "-c", "user.email=t@example.com"] + list(args),
+                       check=True, capture_output=True)
+
+    def test_matching_repo_passes_clean(self):
+        result, found = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(found, set(), result.stdout)
+
+    def test_missing_path_and_symbol(self):
+        os.remove(os.path.join(self.root, "src/cli.ts"))
+        self.write("src/store.ts", "export function readAll() {}\n")
+        result, found = self.check()
+        self.assertEqual(result.returncode, 0, "repo rules are warnings")
+        self.assertEqual(found, {("warning", "repo.paths")})
+        self.assertIn("`src/cli.ts` doesn't exist", result.stdout)
+        self.assertIn("doesn't contain `loadTodos`", result.stdout)
+
+    def test_missing_script(self):
+        self.write("package.json", '{"scripts": {"lint": "eslint .", "test": "vitest run", "build": "tsc"}}\n')
+        result, found = self.check()
+        self.assertEqual(found, {("warning", "repo.commands")})
+        self.assertIn("no script 'typecheck' in package.json", result.stdout)
+        self.assertEqual(len([l for l in result.stdout.splitlines() if "typecheck" in l]), 1,
+                         "each missing script is reported once")
+
+    def test_make_and_just_targets(self):
+        m = load_module()
+        self.write("Makefile", "test lint: deps\n\t@true\nX := 1\n")
+        self.write("justfile", "build target='x':\n  echo\nalias b := build\n")
+        targets = m.repo_targets(self.root)
+        self.assertEqual(targets["make"][1], {"test", "lint"})
+        self.assertEqual(targets["just"][1], {"build", "b"})
+        self.assertEqual(m.named_target("make test"), ("make", "test"))
+        self.assertEqual(m.named_target("CI=1 pnpm typecheck"), ("script", "typecheck"))
+        self.assertIsNone(m.named_target("pnpm install"))
+        self.assertIsNone(m.named_target("npm ci"))
+        self.assertIsNone(m.named_target("npm -w pkg run test"))
+
+    def test_repo_rules_need_the_flag(self):
+        os.remove(os.path.join(self.root, "src/cli.ts"))
+        result = run(self.spec)
+        self.assertEqual(result.stdout.strip(), "%s: ok (accepted)" % self.spec)
+
+    def test_repo_must_be_a_directory(self):
+        self.assertEqual(run("--repo", os.path.join(self.root, "nope"), self.spec).returncode, 2)
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_stale_until_the_spec_is_synced(self):
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "accept")
+        self.assertEqual(self.check()[1], set())
+        self.write("src/store.ts", "export function loadTodos(): Todo[] { return [] as Todo[]; }\n")
+        self.git("commit", "-qam", "build")
+        result, found = self.check()
+        self.assertEqual(found, {("warning", "repo.stale")}, result.stdout)
+        self.assertIn("1 commit since the spec last changed touches src/store.ts", result.stdout)
+        self.write(os.path.join("specs", NAME), read(example("accepted")).replace("updated: 2026-11-26", "updated: 2026-11-27"))
+        self.assertEqual(self.check()[1], set(), "uncommitted spec changes mean a sync is in progress")
+        self.git("commit", "-qam", "sync")
+        self.assertEqual(self.check()[1], set())
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_stale_only_at_accepted(self):
+        self.write(os.path.join("specs", NAME), read(example("draft")))
+        self.git("init", "-q")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "draft")
+        self.write("src/store.ts", "export function loadTodos() { return []; }\n")
+        self.git("commit", "-qam", "change")
+        self.assertEqual(self.check()[1], set())
