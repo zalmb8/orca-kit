@@ -10,7 +10,11 @@ accepted_on:
 
 ## Goal & Non-Goals
 
-<The exact outcome in 1–3 sentences, then what is explicitly out of scope, so the agent stays out of adjacent code.>
+<The exact outcome in 1–3 sentences, then a short paragraph on why.>
+
+Non-goals:
+
+- <A feature nobody asked for, or adjacent code an agent might be tempted to change, named by command or path. At least one item; confirmed by the user.>
 
 ## Environment & Commands
 
@@ -39,7 +43,28 @@ accepted_on:
 
 ## Boundaries & Decision Log
 
-<Always / Ask First / Never rules for the agent, and the architectural choices already made, each with the reason.>
+<Always / Ask First / Never rules for the agent, adapted from the defaults in guardrails.md to the repo's real commands and paths, then the Decision Log. Each list has at least one item.>
+
+Always:
+
+- <Something the agent does every time, e.g. run the whole-suite commands before calling the work done.>
+
+Ask First:
+
+- <A change the agent asks about before making, e.g. adding a dependency to `<manifest>`.>
+
+Never:
+
+- <Something the agent must not do, e.g. edit `<generated path>` by hand.>
+
+Decision Log:
+
+<Only decisions the user made or the repo already settled; never invented. IDs run D-1, D-2, … and are never renumbered or reused.>
+
+- **D-1:** <The decision, in one sentence.>
+  why: <the reason>
+  rejected: <the alternatives considered and not chosen>
+  source: <interview, or the repo paths that show it>
 
 ## Verification Gate
 

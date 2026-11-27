@@ -30,6 +30,18 @@ Find the files an agent will read or change to meet the goal.
 
 Find the contracts the feature has to respect or extend: TypeScript types and interfaces, zod or other validators, pydantic or dataclass models, JSON Schema, OpenAPI, GraphQL, protobuf, database migrations and ORM models.
 
+## 4. Protected and generated files
+
+Find the paths the Always / Ask First / Never lists adapt to (see `guardrails.md`). Note each path; never open or copy a secret.
+
+| Kind | Where to look |
+|---|---|
+| Secrets | `.env*`, credential and key files, and the secret files `.gitignore` lists; secrets that CI steps reference (`${{ secrets.* }}`). |
+| Generated | Build output (`dist/`, `build/`, `out/`), lockfiles, and files or directories that a header comment, README or `.gitattributes` (`linguist-generated`) marks as generated or vendored. |
+| Owned elsewhere | Paths in `CODEOWNERS` that belong to someone else. |
+| Config | The package manifest, CI files, and build, lint and typecheck config (`tsconfig.json`, ESLint, ruff, …). |
+| Migrations | Migration directories, ORM models, and the module that owns a storage format. |
+
 ## Linking, not copying
 
 - Link each file by repo-relative path, adding a symbol or line where it helps: `` `src/types.ts` (`Todo`) `` or `` `src/store.ts:12` ``.

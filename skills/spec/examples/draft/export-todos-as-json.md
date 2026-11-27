@@ -20,7 +20,7 @@ Non-goals:
 - Any format other than JSON (CSV, Markdown, …).
 - Filtering or sorting flags on `todo export`.
 - Writing to a file directly; users redirect stdout.
-- Changing `todo list` or the storage format.
+- Changing `todo list` (`src/commands/list.ts`) or the storage format (`src/store.ts`).
 
 ## Environment & Commands
 
@@ -74,10 +74,45 @@ New contract:
 
 ## Boundaries & Decision Log
 
-- Decision: output goes to stdout only. Why: users can redirect it to a file or pipe it to another tool, and the command stays simple.
-- Decision: the JSON mirrors the `Todo` type rather than a separate export schema. Why: the export stays in sync with the type without extra code.
-- Decision: completed todos are included. Why: the export is meant as a full backup.
-- TBD: boundaries for the agent.
+Always:
+
+- Run `npm run lint`, `npm run typecheck` and `npm test` before calling the work done, and fix what fails.
+- Follow the structure and style of `src/commands/list.ts` and `test/commands/list.test.ts`.
+- Write one test per AC in `test/commands/export.test.ts`, named starting with its ID and a colon (`AC-n: …`).
+
+Ask First:
+
+- Adding, removing or upgrading a dependency in `package.json`.
+- Changing the store format, `loadTodos()` or anything else in `src/store.ts`.
+- Changing the `Todo` type in `src/types.ts`.
+- Changing `src/cli.ts` beyond registering `export`.
+- Changing `.github/workflows/ci.yml`, `tsconfig.json` or `eslint.config.js`.
+
+Never:
+
+- Read, print, modify or commit `.env`.
+- Edit `dist/` or `package-lock.json` by hand: `npm run build` writes `dist/`, and npm writes the lockfile.
+- Refactor, rename or reformat code the goal doesn't need, such as `src/commands/list.ts`.
+- Skip, weaken or delete a test, or edit an AC, to make the Verification Gate pass.
+
+Decision Log:
+
+- **D-1:** Output goes to stdout only.
+  why: users can redirect it to a file or pipe it to another tool, and the command stays simple.
+  rejected: writing to a file; writing to both stdout and a file.
+  source: interview
+- **D-2:** Completed todos are included.
+  why: the export is meant as a full backup.
+  rejected: exporting only open todos.
+  source: interview
+- **D-3:** The JSON mirrors the `Todo` type, with no separate export schema.
+  why: the export stays in sync with the type without extra code; a separate schema would drift.
+  rejected: a separate export schema with its own field list.
+  source: interview
+- **D-4:** The export reads todos only through `loadTodos()`.
+  why: it is the store's only reader, which every command uses, and it reads the file in one call, which AC-6 relies on.
+  rejected: reading the store file directly in the command.
+  source: `src/store.ts`, `src/commands/list.ts`
 
 ## Verification Gate
 

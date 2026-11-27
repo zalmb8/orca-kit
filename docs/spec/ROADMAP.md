@@ -44,8 +44,8 @@ Fields for `done` and `superseded` (for example the verification fields and `sup
 | Status | Set by | Required content |
 |---|---|---|
 | `idea` | capture | Goal (1–3 sentences), Context, Open Questions. Other sections may be missing. |
-| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Other TBDs and open questions are allowed. |
-| `accepted` | refine, with the user's approval | All six sections are filled in. Every AC has a `verify:` line. No TBDs and no open questions. `accepted_by` and `accepted_on` are set. |
+| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Goal & Non-Goals has a `Non-goals:` list; Boundaries & Decision Log has `Always:`, `Ask First:` and `Never:` lists and a `Decision Log:`. Other TBDs and open questions are allowed. |
+| `accepted` | refine, with the user's approval | All six sections are filled in. Every AC has a `verify:` line. The Non-goals and the Always, Ask First and Never lists each have at least one item, and the Decision Log has at least one entry with `why:`, `rejected:` and `source:` lines; none of them has a `TBD:` line. No TBDs and no open questions anywhere. `accepted_by` and `accepted_on` are set. |
 | `done` | a future verification skill | Out of scope here. |
 | `superseded` | another skill, or set by hand | Out of scope here. |
 
@@ -94,11 +94,11 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Verification Gate is built from the AC list.
 - [x] **Done when:** a refined spec has no behavior without an AC, and no AC without a `verify:` line.
 
-### v0.4: Guardrails
-- Always / Ask First / Never lists with sensible defaults that the user can edit.
-- Decision Log entries: decision, why, and alternatives rejected.
-- Explicit Non-Goals.
-- **Done when:** refine fills in all three, and accepting a spec requires them.
+### v0.4: Guardrails ✅
+- [x] Always / Ask First / Never lists with sensible defaults that the user can edit.
+- [x] Decision Log entries: decision, why, and alternatives rejected.
+- [x] Explicit Non-Goals.
+- [x] **Done when:** refine fills in all three, and accepting a spec requires them.
 
 ### v0.5: Checker
 - `skills/spec/check` script, called through `${CLAUDE_PLUGIN_ROOT}`.
@@ -144,3 +144,15 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | The Verification Gate copies each AC's `verify:` command exactly, then adds the whole-suite commands from Environment & Commands, without setup steps | A verification skill can load just the gate and run it. |
 | A `draft` now requires every behavior to be an AC with a `verify:` or `TBD:` line | This is the v0.3 done criterion, applied at the status where refine leaves a spec. |
 | AC, edge-case and gate rules live in `skills/spec/acceptance-criteria.md` | Keeps SKILL.md short; refine loads them when it writes those sections. |
+| Non-goal, boundary and Decision Log rules live in `skills/spec/guardrails.md` | Same pattern as `repo-scan.md` and `acceptance-criteria.md`; refine loads them when it writes those sections. |
+| The three guardrails sit under labelled lists (`Non-goals:`, `Always:`, `Ask First:`, `Never:`, `Decision Log:`) inside their sections, not under extra headings | Keeps exactly the six template headings, matches the existing `Non-goals:` and `Per acceptance criterion:` labels, and gives the v0.5 checker fixed labels to look for. |
+| Refine adapts a fixed set of default boundaries to the repo's real commands and paths, and the user only confirms or changes them | The user never writes boundaries from scratch, and every rule names something real. A default with nothing to adapt to is dropped and reported. |
+| The repo scan also finds protected and generated files (secrets, build output, lockfiles, config, migrations, `CODEOWNERS`) | The Never and Ask First defaults need real paths to adapt to. |
+| Decision Log format: `- **D-n:** <decision>.` with indented `why:`, `rejected:` and `source:` lines | Mirrors the AC pattern, so agents and the checker can parse it. `source:` shows each decision came from the interview or the repo. |
+| Decision IDs are stable, like AC IDs | Later sessions and update mode can refer to a decision by ID. |
+| A Decision Log entry is only what the user decided or what the repo already settled; a choice refine would make itself becomes an interview question | Settled decisions must really be settled, or later sessions will rightly reopen them. |
+| `rejected:` lists only alternatives that were on the table; `none considered` needs the user's word | Stops refine from inventing straw-man alternatives. |
+| At least one non-goal names adjacent code by path | A vague non-goal doesn't stop an agent from refactoring nearby code. |
+| A `draft` must already have all three guardrails, and `accepted` requires them filled in with no `TBD:` lines | This is the v0.4 done criterion: refine always writes them, and acceptance depends on them. |
+| If the user skips the boundaries question, the adapted defaults stay, and accepting the spec confirms them | The interview stays one message, and acceptance is still the user's explicit decision. |
+| Examples gain `examples/accepted/export-todos-as-json.md`, refined again from the draft | A fixture that meets every `accepted` rule, for the v0.5 checker. |
