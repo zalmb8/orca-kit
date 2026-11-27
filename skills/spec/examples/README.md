@@ -1,6 +1,6 @@
 # Examples
 
-Worked examples for `orca-kit:spec`, kept as test fixtures. Each status has its own directory, so every file can be named `<id>.md` as a real spec would be.
+Worked examples for `orca-kit:spec`, kept as test fixtures. Each status has its own directory, so every file can be named `<id>.md` as a real spec would be. All three pass `skills/spec/check`; the failing fixtures live in [`../tests/fixtures/`](../tests/fixtures/).
 
 | File | Status | Produced by |
 |---|---|---|
@@ -37,11 +37,11 @@ The scan answers the open question about which fields to export: the `Todo` type
 
 The user answers: include everything, completed or not, since it's a backup; the non-goals are right, and writing to a file is out too; stdout only, since people can redirect it; mirror `Todo`, because a separate schema would drift; the boundaries are fine, but ask first before changing `src/cli.ts` beyond registering the command. The user has no answer yet for what an empty list should print.
 
-**Refine, write.** Every behavior becomes an acceptance criterion (AC-1 to AC-6), and every edge-case row points to one. Each AC's `verify:` line names the test it will have in `test/commands/export.test.ts`, filtered by its ID. Two gaps stay as `TBD:` lines, which a `draft` allows: the empty-list output in AC-5, and AC-6's check, since the repo has no way yet to test concurrent processes. The Verification Gate lists each AC's command, then the CI suite. Boundaries & Decision Log holds the confirmed lists, with the user's `src/cli.ts` rule under Ask First, and four decisions: D-1 to D-3 from the interview, each rejecting the options the question offered, and D-4 from the repo. The draft can't be accepted yet because of the two `TBD:` lines.
+**Refine, write.** Every behavior becomes an acceptance criterion (AC-1 to AC-6), and every edge-case row points to one. Each AC's `verify:` line names the test it will have in `test/commands/export.test.ts`, filtered by its ID. Two gaps stay as `TBD:` lines, which a `draft` allows: the empty-list output in AC-5, and AC-6's check, since the repo has no way yet to test concurrent processes. The Verification Gate lists each AC's command, then the CI suite. Boundaries & Decision Log holds the confirmed lists, with the user's `src/cli.ts` rule under Ask First, and four decisions: D-1 to D-3 from the interview, each rejecting the options the question offered, and D-4 from the repo. The draft can't be accepted yet because of the two `TBD:` lines: `check --as accepted` fails on them and on AC-6's missing `verify:` line.
 
 **Refine again, then accept.** Later the user says "refine the export-todos-as-json spec". The scan finds nothing new, and the guardrails have no gaps, so refine keeps them as written and asks only about the two `TBD:` lines:
 
 > 1. Edge case: when there are no todos, should `todo export` print `[]`, or nothing?
 > 2. AC-6: the repo can't run two `todo` processes in a test. Should AC-6 be checked in one process (the test changes the store file after `loadTodos()` returns and checks that stdout is still the complete array), or should we add a multi-process test harness?
 
-The user answers: `[]`, so the output always parses; one process, since a harness isn't worth building for this. Refine fills in AC-5 and AC-6's `verify:` line, rebuilds the gate, and records both answers as D-5 and D-6. Its checklists pass with no `TBD:` lines and no open questions left, so it asks whether the user accepts the spec. The user says "Yes, I accept it", and refine sets `status: accepted`, `accepted_by` and `accepted_on`. The accepted spec has the same non-goals and boundaries as the draft, six decisions, and a `verify:` line on every AC.
+The user answers: `[]`, so the output always parses; one process, since a harness isn't worth building for this. Refine fills in AC-5 and AC-6's `verify:` line, rebuilds the gate, and records both answers as D-5 and D-6. Its checklists pass with no `TBD:` lines and no open questions left, and `check --as accepted` exits 0, so it asks whether the user accepts the spec. The user says "Yes, I accept it", and refine sets `status: accepted`, `accepted_by` and `accepted_on`. The accepted spec has the same non-goals and boundaries as the draft, six decisions, and a `verify:` line on every AC.

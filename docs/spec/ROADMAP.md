@@ -100,12 +100,13 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Explicit Non-Goals.
 - [x] **Done when:** refine fills in all three, and accepting a spec requires them.
 
-### v0.5: Checker
-- `skills/spec/check` script, called through `${CLAUDE_PLUGIN_ROOT}`.
-- Validates frontmatter and the rules for whatever status the spec claims.
-- Enforces word budgets per section, to keep specs short.
-- Refine runs the checker before asking the user to accept.
-- **Done when:** a spec marked `accepted` that has open questions, TBDs or an AC with no `verify:` line fails the check.
+### v0.5: Checker ✅
+- [x] `skills/spec/check` script, called through `${CLAUDE_PLUGIN_ROOT}`.
+- [x] Validates frontmatter and the rules for whatever status the spec claims.
+- [x] Enforces word budgets per section, to keep specs short.
+- [x] Refine runs the checker before asking the user to accept.
+- [x] Failing fixtures in `skills/spec/tests/fixtures/` and a stdlib test runner: `python3 -m unittest discover -s skills/spec/tests`.
+- [x] **Done when:** a spec marked `accepted` that has open questions, TBDs or an AC with no `verify:` line fails the check.
 
 ### v0.6: Update mode
 - Writes new edge cases, decisions and changed contracts back into an `accepted` spec.
@@ -156,3 +157,17 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | A `draft` must already have all three guardrails, and `accepted` requires them filled in with no `TBD:` lines | This is the v0.4 done criterion: refine always writes them, and acceptance depends on them. |
 | If the user skips the boundaries question, the adapted defaults stay, and accepting the spec confirms them | The interview stays one message, and acceptance is still the user's explicit decision. |
 | Examples gain `examples/accepted/export-todos-as-json.md`, refined again from the draft | A fixture that meets every `accepted` rule, for the v0.5 checker. |
+| The checker is one Python 3 script using only the standard library, with no file extension | No install step and no dependencies; it runs anywhere `python3` does, and `check` reads like a command. |
+| The frontmatter parser accepts only flat `key: value` lines with plain or quoted single-line values, plus blank and `#` comment lines; anything else is a parse error (exit 2) | The frontmatter is deliberately simple, so a small strict parser is enough, and anything it can't read for certain is reported rather than guessed. |
+| Every status is checked against the same seven frontmatter fields; unknown fields are allowed | Future skills add their own fields for `done` and `superseded`, and the checker mustn't reject them. |
+| `done` and `superseded` are checked only against this skill's `accepted` rules, including `accepted_by` and `accepted_on` | Both statuses come after `accepted`, and their own rules belong to the skills that set them. |
+| `idea` and `draft` fail if `accepted_by` or `accepted_on` is set | Only the user's yes fills them in, so a value at a lower status is a mistake. |
+| `accepted` is checked against every `draft` rule as well as its own, including the edge-case table and the AC format (ID and Given/When/Then) from v0.3 | An accepted spec is a finished draft; the AC format is what makes "every behavior is an AC" checkable. |
+| The checker enforces only the status rules table and the v0.3 and v0.4 rules it names; the checklist items that aren't status rules (edge-case category coverage, the Verification Gate matching the ACs, at least one non-goal naming a path) stay with refine's checklists | Keeps the checker to the rules the table makes required, so it never fails a spec on a judgement call. |
+| A TBD is the word `TBD` and an open question is a `?` ending a word, or an `Open Questions` heading or label, anywhere outside code spans and fences | Simple to find and explain; code may legitimately contain both. |
+| Word budgets per section live in one table at the top of `check`, set at about twice the accepted example's size | One place to tune them, with room for larger features. |
+| Word budgets warn at `idea`, `draft`, `done` and `superseded`, and fail at `accepted` | An accepted spec is what an agent loads, so it must stay short; earlier statuses are still being written, and this skill doesn't edit later ones. |
+| `check --as accepted` checks a draft against the `accepted` rules, skipping `accepted_by` and `accepted_on` | Refine can find out whether a spec is ready before asking the user to accept it, without faking the acceptance record. |
+| Refine fixes the errors the spec and repo answer, turns the rest into interview questions, asks for acceptance only once `check --as accepted` exits 0, and checks again after the yes | The user is never asked to accept a spec that fails the check, and refine never guesses an answer to make it pass. |
+| Output is one line per problem, `<file>:<line>: <severity> [<rule>] <section>: <problem>. Fix: <what to do>.`; exit 0 pass, 1 rule failure, 2 usage or parse error | Editors and agents can jump to the line, and the rule ID maps back to the status rules table (`check --rules`). |
+| Failing fixtures live in `skills/spec/tests/fixtures/<case>/<id>.md`, beside the passing examples | Each fixture keeps the real file name, as the examples do, and each breaks one rule. |

@@ -29,7 +29,8 @@ Write a new `idea` from what is already in the conversation. Ask no questions an
    - **Goal:** 1–3 sentences on the outcome the user wants, in their terms.
    - **Context:** only what the conversation actually said: the problem, who it affects, and any code, files or decisions it mentioned.
    - **Open Questions:** everything the conversation left undecided or unknown. Record it as a question; never guess an answer. There is always at least one.
-4. **Report** the path and list the open questions. Point out that refine is the next step.
+4. **Check it** (optional): run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check specs/<slug>.md` (see [Checker](#checker)). If it reports an error, fix the file yourself, for example by cutting the Goal to 3 sentences and moving the rest to Context. Never ask the user anything about it.
+5. **Report** the path and list the open questions. Point out that refine is the next step.
 
 ## Refine
 
@@ -62,9 +63,18 @@ Turn an `idea` or `draft` into a `draft` with all six sections. Scan the repo fi
 
    Before saving, run the checklists at the end of `acceptance-criteria.md` and `guardrails.md`.
 7. **Set the frontmatter.** `status: draft`. Keep `id` and `created`; set `updated` to today. Leave `accepted_by` and `accepted_on` empty.
-8. **Report** the path, the commands and files found, the number of ACs and decisions, any default boundary dropped because it doesn't apply, and every remaining `TBD` (including each AC still without a `verify:` line).
+8. **Check the draft.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check specs/<slug>.md`, fix every error it reports, and run it again until it exits 0. Shorten any section it warns is over its word budget.
+9. **Report** the path, the commands and files found, the number of ACs and decisions, any default boundary dropped because it doesn't apply, and every remaining `TBD` (including each AC still without a `verify:` line).
 
-Refine leaves the spec at `draft`. Move it to `accepted` only if the user explicitly says they accept it and the spec meets every `accepted` rule below, including filled-in Non-goals, boundaries and Decision Log; otherwise say what is missing and keep it at `draft`. On accepting, set `status: accepted`, `accepted_by` to the user's name or handle, and `accepted_on` and `updated` to today.
+### Accepting
+
+Refine leaves the spec at `draft` until the user accepts it. Never ask the user to accept a spec that fails the check.
+
+1. **Check it as accepted.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec/check --as accepted specs/<slug>.md`. It applies every `accepted` rule except `accepted_by` and `accepted_on`, which only the user's yes can fill in.
+2. **Fix what you can.** Fix every error the spec and the repo already answer, without asking: the AC, edge-case table, Decision Log and list formats, a section over its word budget, a `verify:` line the scan can name. Never fix an error by deleting an AC, a non-goal, a boundary or a decision, or by guessing an answer.
+3. **Ask about the rest.** When refining a `draft`, run steps 1 and 2 before the interview (step 5 above), and add each remaining error to it as a question: each `TBD:` and open question, each AC with no known check, each empty list or missing `why:`, `rejected:` or `source:` line. Write the answers into the spec and check it again. While it still fails, keep it at `draft` and report what is missing.
+4. **Ask for acceptance** only once the check exits 0. Move the spec to `accepted` only on the user's explicit yes: set `status: accepted`, `accepted_by` to the user's name or handle, and `accepted_on` and `updated` to today.
+5. **Check it again** without `--as`. It must exit 0. If it doesn't, set the spec back to `draft`, empty `accepted_by` and `accepted_on`, and say why.
 
 ## Update
 
@@ -106,6 +116,17 @@ accepted_on:
 - **This skill never sets `done` or `superseded`.** Other skills, or the user by hand, set those statuses. Leave such specs alone.
 - Never move a spec to a status whose required content is missing. If it doesn't qualify, leave it at the lower status and say what is missing.
 
+## Checker
+
+`${CLAUDE_PLUGIN_ROOT}/skills/spec/check <spec.md> [...]` checks a spec's frontmatter and the rules above for the status it claims, plus a word budget per section. It needs only `python3`.
+
+- `--as idea|draft|accepted` checks the content as if the spec claimed that status. `--rules` lists the rules checked at each status.
+- It prints one line per problem, `<file>:<line>: <error|warning> [<rule>] <section>: <problem>. Fix: <what to do>.`, and `<file>: ok (<status>)` for a file that passes.
+- It exits 0 when every file passes, 1 when a rule fails, and 2 for a usage or parse error. Warnings never change the exit code.
+- Word budgets warn at `idea` and `draft` and fail at `accepted`, so refine trims a spec before it is accepted.
+- For `done` and `superseded`, it checks only this skill's `accepted` rules and ignores fields that other skills add.
+- If `python3` isn't available, run the checklists at the end of `acceptance-criteria.md` and `guardrails.md` by hand against the status rules table, and tell the user the checker didn't run.
+
 ## Out of scope
 
 - Running verification or writing a verification report.
@@ -119,4 +140,6 @@ accepted_on:
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/repo-scan.md`: where refine looks for commands, critical files and types.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/acceptance-criteria.md`: the AC format, the edge-case table and how refine builds the Verification Gate.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec/guardrails.md`: the Non-goals, the default Always / Ask First / Never lists and how refine adapts them, and the Decision Log format.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec/examples/`: an `idea`, the `draft` that refining it produces, and the `accepted` spec a second refine produces from that draft.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec/examples/`: an `idea`, the `draft` that refining it produces, and the `accepted` spec a second refine produces from that draft. All three pass the checker.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec/check`: the checker (see [Checker](#checker)).
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec/tests/`: the checker's tests and failing fixtures; run `python3 -m unittest discover -s skills/spec/tests` from the plugin root.

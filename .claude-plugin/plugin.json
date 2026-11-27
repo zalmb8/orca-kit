@@ -1,6 +1,6 @@
 {
   "name": "orca-kit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Everything an engineer needs to drive AI software development workflows from Orca.",
   "author": { "name": "zalmb8" },
   "repository": "https://github.com/zalmb8/orca-kit",
