@@ -97,13 +97,13 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] A high-risk spec needs a sign-off record (`signed_off_by`, `signed_off_on`, the risks shown) in `specs/reviews/<slug>.json` before review can pass. The skill asks; only the user's explicit yes fills it in.
 - [x] **Done when:** a spec touching a migration can't pass review without a recorded human sign-off, and the skill never records one itself.
 
-### v0.4: Specialised reviewers
-- [ ] The five agents in `agents/`, each with its rubric, its `rule` keys, a context list, and the findings format.
-- [ ] The skill runs them in parallel in fresh contexts, passing the spec path and rubric only, never the author's reasoning.
-- [ ] Findings are validated, deduplicated by location and rule, and written to `specs/reviews/<slug>.json`.
-- [ ] Warnings and nits are shown as comments; nothing advisory fails the review.
-- [ ] Sample specs with seeded problems in `skills/spec-review/examples/` (a weasel word, a missing error state, an unmentioned downstream contract, an oversized spec).
-- [ ] **Done when:** each seeded problem is reported by the reviewer that owns it, as a valid typed finding.
+### v0.4: Specialised reviewers ✅
+- [x] The five agents in `agents/`, each with its rubric, its `rule` keys, a context list, and the findings format.
+- [x] The skill runs them in parallel in fresh contexts, passing the spec path and rubric only, never the author's reasoning.
+- [x] Findings are validated, deduplicated by location and rule, and written to `specs/reviews/<slug>.json`.
+- [x] Warnings and nits are shown as comments; nothing advisory fails the review.
+- [x] Sample specs with seeded problems in `skills/spec-review/examples/` (a weasel word, a missing error state, an unmentioned downstream contract, an oversized spec).
+- [x] **Done when:** each seeded problem is reported by the reviewer that owns it, as a valid typed finding.
 
 ### v0.5: Bounded revision loop
 - [ ] Blockers of kind `fix` go back to the author (the session that drafted the spec, via `orca-kit:spec` refine); reviewers re-run fresh on the revised spec.
@@ -181,3 +181,15 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | No script writes the record; Claude writes it by hand after the user's explicit yes, with the name the user gives, and a test checks the scripts never write files | Core rule 2, and the v0.3 done criterion: the only path to a sign-off goes through the user. |
 | Low-risk specs need no record in v0.3 | Nothing in it would be read yet; v0.6's review summary is where every review gets one. |
 | Risk fixtures are `tests/fixtures/risk-<case>/`, each a small repo with `specs/<slug>.md` and, when the case needs one, `specs/reviews/<slug>.json` | The record sits where a real repo keeps it, so the fixtures test the path the gate looks up. |
+| The reviewers are plugin agents with read-only tools (`Read`, plus `Grep` and `Glob` for the three that search the repo), and the prompt is only `Spec:` and `Repo root:` lines | Read-only tools enforce "never edits"; the spec-only reviewers can't search at all. The roadmap's "spec path and rubric only": the rubric lives in the agent file, so the prompt carries nothing the author could leak into. |
+| The slicer gets its counts as one `Counts:` line from a new `gate --counts` (words as the length gate counts them, the ceiling, `- **AC-n:**` items outside code) | "Its word and AC counts" must be deterministic, not the reviewer's own count; reusing the gate's counter keeps one definition of a word. `gate` without `--counts` is unchanged. |
+| The slicer's anchors are more than 10 ACs or more than 75% of the word ceiling, and its findings are always `decision` | The roadmap gives no numbers; 10 ACs is past the accepted example spec's size, and 75% leaves room before the hard length gate fails. How to split a spec is the user's call (v0.6's skim test pause). |
+| Each rubric has tiebreaks so one problem gets one rule, and "don't report" lines for what other reviewers own | Stable `rule` keys only count well (v0.7) if the same problem always lands on the same key, and narrow rubrics shouldn't overlap. |
+| Dedup is `findings --merge`: same `rule`, same location (section ignoring case and spacing, line, ref ignoring case) and same `risk`; the most severe, then a `decision`, then the first is kept, in the first's place | Deterministic and testable. Including `risk` means a merge can never lower the tier. Findings are never edited or combined by the script. |
+| Every reviewer must report at most one finding per rule and location, combining several problems at one spot into one finding | The live run showed blast-radius reporting two consumers at one spec line, which the merge then collapsed, losing one. Making it the reviewer's contract keeps the dedupe rule simple and loss-free. |
+| A merge drops and reports a rejected finding, a whole file that isn't a JSON array, or a finding whose id an earlier file used, and goes on; its stdout is always a valid findings array | The findings format's rule (drop and report, never guess), applied per reviewer, so one malformed reply doesn't lose the other four. Its output feeds `gate --risk --findings`, which would otherwise exit 2. |
+| The review record gains an optional `passes` list (at most 3 entries of `findings` and `open_blockers`), checked by `record`; a v0.3 record without it stays valid | The roadmap puts every pass's findings and open-blocker count in the record. Optional keeps v0.3 records and tests valid; the cap and count prepare v0.5's loop. |
+| In v0.4 a review is one pass, and every review writes a record, low risk included | There is no loop yet, so a new review replaces `passes`. The findings need a committed home whatever the tier; v0.3's "low-risk specs need no record" applied only while a record held nothing but the sign-off. |
+| The review's pass/fail is `gate --risk --findings` alone; blockers are reported as open, decisions as questions, warnings and nits as comments | "Nothing advisory fails the review" (core rule 1). Findings reach the result only through `risk`, which can only require a sign-off. |
+| The examples are one fake repo (`examples/repo/`) with six specs, two beyond the roadmap's four so architecture and security own a seed too, and `expected.json` outside it | Every reviewer gets a seeded problem to be checked on; the fake repo gives architecture an ADR and blast-radius a consumer to find, and answers outside the repo root can't leak to a reviewer. |
+| The live reviewer runs are not committed or unit-tested; the tests check the agents, rules, examples and scripts deterministically | Reviewer output is probabilistic, and a test that calls an LLM would not be deterministic. The live check is rerun when a rubric changes. |
