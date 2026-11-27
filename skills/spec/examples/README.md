@@ -1,12 +1,15 @@
 # Examples
 
-Worked examples for `orca-kit:spec`, kept as test fixtures. Each status has its own directory, so every file can be named `<id>.md` as a real spec would be. All three pass `skills/spec/check`; the failing fixtures live in [`../tests/fixtures/`](../tests/fixtures/).
+Worked examples for `orca-kit:spec`, kept as test fixtures. Each status has its own directory, so every file can be named `<id>.md` as a real spec would be. All four pass `skills/spec/check`; the failing fixtures live in [`../tests/fixtures/`](../tests/fixtures/).
 
 | File | Status | Produced by |
 |---|---|---|
 | [`idea/export-todos-as-json.md`](idea/export-todos-as-json.md) | `idea` | capture |
 | [`draft/export-todos-as-json.md`](draft/export-todos-as-json.md) | `draft` | refine, run on the idea above |
 | [`accepted/export-todos-as-json.md`](accepted/export-todos-as-json.md) | `accepted` | refine, run again on the draft above, then the user's yes |
+| [`updated/export-todos-as-json.md`](updated/export-todos-as-json.md) | `accepted` | update, run on the accepted spec above after the build |
+
+The updated spec is still `accepted`, so it can't sit in `accepted/` beside the spec it was updated from; its directory names the mode that wrote it instead.
 
 ## Scenario
 
@@ -45,3 +48,13 @@ The user answers: include everything, completed or not, since it's a backup; the
 > 2. AC-6: the repo can't run two `todo` processes in a test. Should AC-6 be checked in one process (the test changes the store file after `loadTodos()` returns and checks that stdout is still the complete array), or should we add a multi-process test harness?
 
 The user answers: `[]`, so the output always parses; one process, since a harness isn't worth building for this. Refine fills in AC-5 and AC-6's `verify:` line, rebuilds the gate, and records both answers as D-5 and D-6. Its checklists pass with no `TBD:` lines and no open questions left, and `check --as accepted` exits 0, so it asks whether the user accepts the spec. The user says "Yes, I accept it", and refine sets `status: accepted`, `accepted_by` and `accepted_on`. The accepted spec has the same non-goals and boundaries as the draft, six decisions, and a `verify:` line on every AC.
+
+**Build, then update.** An agent builds the command from the accepted spec. While building, it finds that `loadTodos()` in `src/store.ts` returns no todos when the store file doesn't exist yet, and adds a test `AC-5: missing store file prints []`. Seeing the first output, the user says: "Indent it, so the backups diff nicely in git." The agent writes `JSON.stringify(todos, null, 2)` in `src/commands/export.ts`. Then the user says "sync the spec".
+
+Update finds the commit that accepted the spec and reads the diff since then on the files the spec links to, the test file its `verify:` lines name and their directories, which shows the new `src/commands/export.ts`. Together with the conversation, that gives three changes, all information only:
+
+- **Edge case.** A missing store file is a new `Empty:` row. `loadTodos()` already returns no todos for it, so AC-5's *then* covers it, and the row points to AC-5. No AC changes, so no re-acceptance.
+- **Decision.** The indentation is the user's choice, made during the build, so it becomes D-7 with `source: conversation; src/commands/export.ts`, and the user's reason as `why:`. The alternative on the table was the compact JSON the first output showed.
+- **Contract and trim.** `src/commands/export.ts` and `test/commands/export.test.ts` now exist and pin the exact output, so the Interfaces & Data Contracts passage that described the output in prose becomes links to them, with the indentation noted against D-7.
+
+Update bumps `updated` and leaves `accepted_by` and `accepted_on` alone, since nothing gated changed. The six headings, the ACs, the Non-goals and the Always / Ask First / Never lists are exactly as accepted, and the checker still prints `ok (accepted)`. Had the build shown a behavior no AC covers, such as a closed stdout pipe, update would have proposed a new AC-7 and asked the user to accept again before writing it.

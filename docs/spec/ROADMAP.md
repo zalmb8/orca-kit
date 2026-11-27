@@ -108,11 +108,11 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Failing fixtures in `skills/spec/tests/fixtures/` and a stdlib test runner: `python3 -m unittest discover -s skills/spec/tests`.
 - [x] **Done when:** a spec marked `accepted` that has open questions, TBDs or an AC with no `verify:` line fails the check.
 
-### v0.6: Update mode
-- Writes new edge cases, decisions and changed contracts back into an `accepted` spec.
-- Trims prose that types and tests now cover, and bumps `updated`.
-- Asks the user to accept again if the acceptance criteria change.
-- **Done when:** a discovery made during implementation can be synced into the spec, and the spec still passes the checker.
+### v0.6: Update mode ✅
+- [x] Writes new edge cases, decisions and changed contracts back into an `accepted` spec.
+- [x] Trims prose that types and tests now cover, and bumps `updated`.
+- [x] Asks the user to accept again if the acceptance criteria change.
+- [x] **Done when:** a discovery made during implementation can be synced into the spec, and the spec still passes the checker.
 
 ### Alongside each release
 - Sample specs in `skills/spec/examples/<status>/<slug>.md` (an `idea`, the `draft` refined from it, and later an `accepted`) to use as test fixtures.
@@ -171,3 +171,18 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | Refine fixes the errors the spec and repo answer, turns the rest into interview questions, asks for acceptance only once `check --as accepted` exits 0, and checks again after the yes | The user is never asked to accept a spec that fails the check, and refine never guesses an answer to make it pass. |
 | Output is one line per problem, `<file>:<line>: <severity> [<rule>] <section>: <problem>. Fix: <what to do>.`; exit 0 pass, 1 rule failure, 2 usage or parse error | Editors and agents can jump to the line, and the rule ID maps back to the status rules table (`check --rules`). |
 | Failing fixtures live in `skills/spec/tests/fixtures/<case>/<id>.md`, beside the passing examples | Each fixture keeps the real file name, as the examples do, and each breaks one rule. |
+| Update runs only on an `accepted` spec; on `idea` or `draft` it points to refine, and it leaves `done` and `superseded` alone | Refine owns specs that aren't accepted yet, and this skill never touches the statuses other skills set. |
+| Update gathers discoveries from the conversation and from `git log` and `git diff` since the commit that accepted the spec, on the files the spec links to, the tests its `verify:` lines name, and their directories | Those are the places a build changes, and the directories catch new files such as the command itself. Every discovery has a source. |
+| A discovery that stays unclear after asking is left out and reported, never written as `TBD:` | An `accepted` spec has no TBDs, and update never guesses. |
+| Code that contradicts an AC is reported to the user, not synced into the AC | Changing the AC would need re-acceptance, and whether the build is right is a verification question. |
+| Re-acceptance is needed to add, remove or change an AC (its Given/When/Then or its `verify:` line), to change or remove an existing edge-case row, and to change the Non-goals or the Always, Ask First or Never lists | These are what the user accepted. A `verify:` line is how the AC is checked, and an edge-case row states accepted behavior. |
+| Adding a decision, an edge-case row under an AC whose *then* already covers it, contract details that match the code, and trims need no re-acceptance | They only add information or replace prose with a link; the accepted behavior stays the same. |
+| A gated change is shown before and after and needs the user's explicit yes; a yes refreshes `accepted_by` and `accepted_on`, a no drops only that change | Acceptance stays the user's decision, and declining one change doesn't block the rest of the sync. |
+| Existing Decision Log entries are never edited by update, except to rewrite one under its own ID when the user reverses it, with the old choice added to `rejected:` | Settled decisions stay settled, and IDs stay stable for later references. |
+| Update's `source:` for a choice the user made while building is `conversation`, followed by the paths that implement it | It distinguishes a build-time choice from the refine interview and still points to the code. |
+| Trims apply only to Interfaces & Data Contracts and to Environment & Commands prose, and only once the linked file exists and states the same thing; ACs, the edge-case table, Non-goals, guardrails, the Decision Log and the Verification Gate are never trimmed | The spec shrinks only where the code has become the source of truth, and the contract parts stay intact. |
+| Update adds no changelog section | Git history records what changed; a changelog would break the six-heading rule and grow every spec. |
+| Update runs the checker after every update; if the spec can't be made to pass, it restores the spec's text from before the update | An accepted spec is never left failing the check. |
+| Update's rules live in `skills/spec/update.md` | Same pattern as the other guidance files; update loads it when it runs. |
+| The updated example lives at `examples/updated/export-todos-as-json.md`, an exception to `examples/<status>/` | Its status is `accepted`, and `accepted/` already holds the spec it was updated from; the file keeps its real name. |
+| The updated example's test compares it with the accepted example: same frontmatter except `updated`, same ACs and guardrail lists, one new edge-case row under an existing AC, one new decision with the next ID, one trimmed passage | This proves the v0.6 done criterion and the re-acceptance split, not just that the file passes the checker. The checker itself is unchanged. |
