@@ -44,7 +44,7 @@ Fields for `done` and `superseded` (for example the verification fields and `sup
 | Status | Set by | Required content |
 |---|---|---|
 | `idea` | capture | Goal (1–3 sentences), Context, Open Questions. Other sections may be missing. |
-| `draft` | refine | All six sections exist. TBDs and open questions are allowed. |
+| `draft` | refine | All six sections exist. Every behavior is an AC and every edge-case row points to one. Every AC has a `verify:` line or a `TBD:` line. Other TBDs and open questions are allowed. |
 | `accepted` | refine, with the user's approval | All six sections are filled in. Every AC has a `verify:` line. No TBDs and no open questions. `accepted_by` and `accepted_on` are set. |
 | `done` | a future verification skill | Out of scope here. |
 | `superseded` | another skill, or set by hand | Out of scope here. |
@@ -88,11 +88,11 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 - [x] Refine asks the user only about intent: goal, non-goals and decisions already made.
 - [x] **Done when:** an `idea` can be refined into a `draft` with every section present.
 
-### v0.3: Acceptance criteria and edge cases
-- Each AC has an ID (`AC-n`), a Given/When/Then description and a `verify:` command or test.
-- A required edge-case table: input or condition → expected behavior → AC ID.
-- Verification Gate is built from the AC list.
-- **Done when:** a refined spec has no behavior without an AC, and no AC without a `verify:` line.
+### v0.3: Acceptance criteria and edge cases ✅
+- [x] Each AC has an ID (`AC-n`), a Given/When/Then description and a `verify:` command or test.
+- [x] A required edge-case table: input or condition → expected behavior → AC ID.
+- [x] Verification Gate is built from the AC list.
+- [x] **Done when:** a refined spec has no behavior without an AC, and no AC without a `verify:` line.
 
 ### v0.4: Guardrails
 - Always / Ask First / Never lists with sensible defaults that the user can edit.
@@ -133,3 +133,14 @@ Each release can be used on its own. Bump `.claude-plugin/plugin.json` `version`
 | The repo scan's sources and linking rules live in `skills/spec/repo-scan.md` | Keeps SKILL.md short; refine loads the details only when it scans. |
 | When CI and local scripts disagree, Environment & Commands lists the CI command first | CI is what must pass to merge. |
 | Examples live at `skills/spec/examples/<status>/<slug>.md` | Each fixture keeps the real file name, so `id` equals the file name. |
+| ACs live in Behavior & Edge Cases; the Verification Gate lists them by ID | A behavior and its AC are one statement, so they stay together; the gate stays a plain checklist; the spec keeps exactly the six template headings. |
+| Every behavior in Behavior & Edge Cases is written as an AC, with no free prose about behavior | Makes "no behavior without an AC" checkable by reading the section. |
+| AC format: `- **AC-n:** Given …, when …, then ….` with an indented `verify:` line, or `TBD:` in a draft | One predictable pattern that agents and the v0.5 checker can parse. A `TBD:` line follows the v0.2 convention. |
+| AC IDs are stable: never renumbered, and a removed AC's ID is never reused | Tests and the Verification Gate refer to ACs by ID. |
+| When the test doesn't exist yet, `verify:` names its future file and filters on a test name starting `AC-n:` | The check is exact before the code exists, and the colon keeps `AC-1` from matching `AC-10`. |
+| The edge-case table's first cell starts with its category (`Invalid input:`, `Failure:`, `State conflict:`, …); a category that can't happen goes in a `Not applicable:` line under the table | Coverage of the required categories is visible at a glance, and every row still points to an AC. |
+| Several edge-case rows may point to the same AC | Conditions with the same expected behavior need one check, not duplicate ACs. |
+| Refine takes edge-case behavior from the conversation and the closest existing code first, and asks the user only about the rest; unknown answers become `TBD:` | Extends the v0.2 rule of asking only what the repo can't answer. |
+| The Verification Gate copies each AC's `verify:` command exactly, then adds the whole-suite commands from Environment & Commands, without setup steps | A verification skill can load just the gate and run it. |
+| A `draft` now requires every behavior to be an AC with a `verify:` or `TBD:` line | This is the v0.3 done criterion, applied at the status where refine leaves a spec. |
+| AC, edge-case and gate rules live in `skills/spec/acceptance-criteria.md` | Keeps SKILL.md short; refine loads them when it writes those sections. |
