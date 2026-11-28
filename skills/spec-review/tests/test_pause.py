@@ -479,6 +479,7 @@ class Resume(TempCase):
         root = self.copy("pause-keep-carried")
         rec = self.record(root)
         rec["questions"][0]["answer"]["choice"] = "split"
+        rec["passes"][1]["open_blockers"] = 1  # not kept, so pass 2's slicer blocker is open, and counted (v0.8: one counting rule)
         self.save(root, rec)
         result = converge(root)
         # Not carried: pass 2's slicer blocker is open again (3 -> 1 is still progress), so the loop stops for the user.
@@ -802,12 +803,12 @@ class Docs(unittest.TestCase):
             return f.read()
 
     def test_skill_names_the_scripts_and_lists_them_available(self):
-        # v0.7 made every release available; the status names the pauses and the summary as built.
+        # v0.7 made every release available; the status names the pauses and the summary as built (v0.8 is the current status).
         skill = self.read(SKILL_DIR, "SKILL.md")
         for name in ("pause", "summary", "pauses.md"):
             self.assertIn(name, skill)
-        self.assertIn("## Status (v0.7)", skill)
-        status = skill.split("## Status (v0.7)", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("## Status (v0.8)", skill)
+        status = skill.split("## Status (v0.8)", 1)[1].split("\n## ", 1)[0]
         self.assertNotIn("not yet available", status)
         for name in ("`pause`", "`summary`"):
             self.assertIn(name, status)

@@ -1,6 +1,6 @@
 # The advisory reviewers
 
-Reference for the advisory review (v0.4; severity levels v0.5). SKILL.md says when and how to run it; this file lists the reviewers, their rule keys, how their findings are merged and deduplicated, how they are recorded, and the seeded examples.
+Reference for the advisory review (v0.4; severity levels v0.5; malformed replies and overlap v0.8). SKILL.md says when and how to run it; this file lists the reviewers, their rule keys, how their findings are merged and deduplicated, how they are recorded, and the seeded examples.
 
 ## The five reviewers
 
@@ -36,7 +36,13 @@ Repo root: /abs/path/to/repo
 
 The slicer gets a third line, `Counts: <the line gate --counts printed>`. The five run in parallel, each in a fresh context; run them again for a new pass, never continue an earlier reviewer's context.
 
-Save each reply, as returned, to its own file outside the repo (for example `$TMPDIR/spec-review/<slug>/<reviewer>.json`). Don't repair a reply that isn't a bare JSON array (a code fence, prose around it): the validator rejects the file and its findings are dropped and reported. That reviewer can be re-run once in a fresh context; say so if it is.
+Save each reply, as returned, to its own file outside the repo (for example `$TMPDIR/spec-review/<slug>/<reviewer>.json`). Don't repair a reply that isn't a bare JSON array (a code fence, prose around it): the validator rejects the file and its findings are dropped and reported.
+
+**A malformed reply** is one `findings` rejects, in whole or in part (exit 1 or 2). The rule is fixed, so it stays bounded:
+
+1. Re-run that one reviewer **once**, in a fresh context with the same prompt, and save the new reply in place of the first. Never combine the two replies, and never re-run a reviewer whose reply passed.
+2. The re-run's reply is the reviewer's reply for the pass, whatever it is. If it fails too, it goes into the merge as it is: the merge drops and reports each invalid finding (or the whole reply, if it isn't a JSON array), and the other four reviewers' findings stand.
+3. Never re-run a reviewer a second time in the same pass. Tell the user which reviewer was re-run, why, and what was dropped.
 
 ## Merging and deduplication
 
@@ -49,6 +55,8 @@ Save each reply, as returned, to its own file outside the repo (for example `$TM
 - **Exit.** The worst of the files' codes (0, 1 or 2), or 1 for an id clash. stdout is always a valid findings array, so it can be passed straight to `gate --risk --findings`.
 
 Two different rules at the same spot are not duplicates: they are two problems, each owned by one rubric. The merge is deterministic, and its tests are in `tests/test_reviewers.py`.
+
+**Overlap is reported, never merged** (v0.8). When two kept findings from different reviewers are at the same spot (the same section, and the same line or the same ref) and their evidence names the same repo path, the merge prints a `note [merge.overlap]` line on stderr. Both findings stay in the array, and the result line is unchanged. The note is a prompt for the person reading the report: the two may be one problem that two rubrics both claimed. Deciding that needs a reading of both, which a script can't do deterministically, so it never drops either. In the first hands-on review, `architecture.codebase-drift` and `blast-radius.unmentioned-contract` / `incompatible-change` each reported the same three issues (a fixture and two tests asserting the old wording), so 7 blockers were really about 5. The fix is in the rubrics: architecture owns whether a change fits the code's design (layering, access paths, invariants, ADRs, steering rules); blast-radius owns every consumer that reads, parses, asserts or stores what changes, tests and fixtures included, even under `Existing:`.
 
 ## The review record's passes
 
@@ -63,8 +71,8 @@ The review record `specs/reviews/<slug>.json` (format in `risk.md`) gains an opt
 - One entry per review pass, at most 3. Writing a new review replaces `passes` with one entry. Each pass of the revision loop (`loop.md`) appends one.
 - `words` and `gates` (v0.5) are optional: the spec's word count and its gate result (`passed` or `failed`) for that pass. The loop writes both, and `converge` checks them against the specs it is given.
 - `findings` is the merged array: every finding valid, ids unique, no two with the same rule, location and risk.
-- `open_blockers` is the number of `blocker` findings in that pass.
-- Every `risk` a finding in the last pass names is in `risk.risks`, so the record's tier is the one `gate --risk --findings` computed from those findings.
+- `open_blockers` is the pass's open blockers: its `blocker` findings, less a `slicer.oversized` blocker the user answered `keep` to in an earlier pass (v0.6's carry). `record` checks it with the same function `converge` and `summary` count with (v0.8), and rejects a count that disagrees.
+- Every `risk` a finding in any pass names is in `risk.risks` (v0.8: a risk a pass raised stays raised for the review), so the record's tier is the one `gate --risk` computes from the spec and every pass.
 - A record with no `passes` (every v0.3 record) stays valid. `record` checks all of this under `record.passes`.
 
 ## The seeded examples

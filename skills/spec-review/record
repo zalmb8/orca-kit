@@ -9,7 +9,7 @@ Usage:
 
 A review record is a JSON object, committed next to the spec it reviews
 (docs/spec-review/ROADMAP.md, "Findings format"; the format is in
-review-record.md next to this script):
+risk.md next to this script):
 
   {
     "spec": "<slug>",
@@ -29,9 +29,13 @@ spec, risk and sign_off are required; only `sign_off` may be null. `passes`
 (v0.4) is optional, so a v0.3 record stays valid: one entry per review pass,
 at most 3, each holding that pass's findings (each valid under the findings
 validator, ids unique, no two with the same rule, location and risk, as
-`findings --merge` leaves them) and its count of blockers, and optionally
-(v0.5, the revision loop) the spec's word count and its gate result for that
-pass. Every risk a finding in the last pass names must be in risk.risks.
+`findings --merge` leaves them) and its count of open blockers, and
+optionally (v0.5, the revision loop) the spec's word count and its gate
+result for that pass. The open count is open_counts below, the one rule
+converge and summary use too (v0.8): a pass's blockers, less a
+slicer.oversized blocker the user answered `keep` to in an earlier pass.
+Every risk a finding in any pass names must be in risk.risks: a risk a pass
+raised stays raised for the rest of the review (v0.8).
 `questions` (v0.6, the human-in-the-loop pauses; pauses.md) is optional too,
 and needs `passes`: one entry per question `pause` printed and the skill
 asked, with the options shown and, once the user replies, their answer. A
@@ -111,9 +115,10 @@ RULE_TEXT = {
     "record.risk": "risk has tier (low | high), risks (unique, from the risk list; empty exactly when tier is low) and reasons (text; non-empty when tier is high)",
     "record.sign-off": "sign_off is null, or has signed_off_by (a name), signed_off_on (a real YYYY-MM-DD date) and risks (the non-empty, unique risks shown to the person signing)",
     "record.passes": "passes, if present, is a list of 1 to %d passes, each with findings (valid findings, unique ids, "
-                     "no duplicate rule, location and risk) and open_blockers (its number of blockers), and optionally "
+                     "no duplicate rule, location and risk) and open_blockers (its open blockers: its blockers, less a "
+                     "slicer.oversized the user answered keep to in an earlier pass, as converge and summary count them), and optionally "
                      "words (the spec's word count) and gates (passed | failed); "
-                     "the last pass's risks are in risk.risks" % MAX_PASSES,
+                     "the risks every pass's findings name are in risk.risks (a raised risk stays raised for the review)" % MAX_PASSES,
     "record.questions": "questions, if present, needs passes and is a list of questions, each with exactly "
                         + ", ".join(QUESTION_FIELDS) + ": a unique id pass-<n>.<finding id> | pass-<n>.skim | pass-<n>.loop "
                         "matching its pass, trigger and finding; a decision question names a decision blocker of its pass, "
@@ -245,10 +250,15 @@ def check_record(data, text, stem):
                 if problem:
                     bad("risks", "record.sign-off", "sign_off.risks", "risks " + problem,
                         "list exactly the risks shown to the user when they said yes")
+    loop = []
     if "passes" in data:
-        out.extend(check_passes(data, text))
+        loop.extend(check_passes(data, text))
     if "questions" in data:
-        out.extend(check_questions(data, text))
+        loop.extend(check_questions(data, text))
+    if not loop and data.get("passes"):
+        # Counted only when the passes and questions are otherwise valid: the count reads both.
+        loop.extend(check_open_counts(data, text))
+    out.extend(loop)
     return sorted(out, key=lambda p: p[0])
 
 
@@ -261,6 +271,7 @@ def check_passes(data, text):
         out.append((line, "record.passes", field, problem, fix))
 
     passes = data["passes"]
+    named = set()
     if not isinstance(passes, list) or not 1 <= len(passes) <= MAX_PASSES:
         bad("passes", "passes is %s, not a list of 1 to %d passes" % (show(passes), MAX_PASSES),
             "give one {\"findings\": [...], \"open_blockers\": <n>} per review pass, or leave passes out")
@@ -312,18 +323,94 @@ def check_passes(data, text):
                         "record the deduplicated array `findings --merge` printed")
                 else:
                     keys[key] = n
-            if len(valid) == len(findings) and "open_blockers" in p:
-                blockers = sum(1 for f in valid if f["severity"] == "blocker")
-                ob = p["open_blockers"]
-                if not (isinstance(ob, int) and not isinstance(ob, bool)) or ob != blockers:
-                    bad(field + ".open_blockers", "open_blockers is %s, but the pass has %d blocker%s" % (
-                        show(ob), blockers, "" if blockers == 1 else "s"), "set it to the number of blocker findings in the pass")
-        if i == len(passes) and isinstance(data.get("risk"), dict) and isinstance(data["risk"].get("risks"), list):
-            named = sorted({f["risk"] for f in valid if f["risk"] is not None} - set(data["risk"]["risks"]), key=RISKS.index)
-            if named:
-                bad(field + ".findings", "findings name risk %s, which risk.risks doesn't list" % ", ".join(named),
-                    "set risk to what `gate --risk --findings` reported for these findings")
+        if "open_blockers" in p:
+            ob = p["open_blockers"]
+            if not (isinstance(ob, int) and not isinstance(ob, bool) and ob >= 0):
+                bad(field + ".open_blockers", "open_blockers is %s, not a whole number" % show(ob),
+                    "set it to the pass's open blockers (open_counts: its blockers, less a slicer.oversized kept in an earlier pass)")
+        # A risk a finding raised in any pass stays raised for the rest of the review (v0.8), so every pass counts, not only the last.
+        if isinstance(data.get("risk"), dict) and isinstance(data["risk"].get("risks"), list):
+            for r in sorted({f["risk"] for f in valid if f["risk"] is not None} - set(data["risk"]["risks"]) - named, key=RISKS.index):
+                named.add(r)
+                bad(field + ".findings", "a finding in pass %d names risk %s, which risk.risks doesn't list" % (i, r),
+                    "a risk a finding raised in any pass stays raised for the rest of the review; "
+                    "set risk to what `gate --risk` reports, which reads every pass")
     return out
+
+
+def check_open_counts(data, text):
+    """[(line, rule, field, problem, fix)]: each pass's open_blockers against open_counts, the one counting rule."""
+    out = []
+    counts = open_counts(data)
+    _, carried = resolutions(data)
+    for i, (p, count) in enumerate(zip(data["passes"], counts), 1):
+        if p["open_blockers"] == count:
+            continue
+        kept = sum(1 for f in blockers_of(p) if (i, f["id"]) in carried)
+        why = " (%s, less %d %s the user answered keep to in an earlier pass)" % (
+            plural(len(blockers_of(p)), "blocker"), kept, SKIM_RULE) if kept else ""
+        out.append((line_of(text, "passes"), "record.passes", "passes[%d].open_blockers" % i,
+                    "open_blockers is %d, but pass %d has %s%s" % (p["open_blockers"], i, plural(count, "open blocker"), why),
+                    "set it to %d: a pass's open blockers are its blockers, less a %s blocker the user answered keep to "
+                    "in an earlier pass; converge and summary count the same way" % (count, SKIM_RULE)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Counting open blockers: the one rule the record's open_blockers, converge,
+# pause and summary share (v0.8), so the stored count and the verdict can't
+# disagree.
+# ---------------------------------------------------------------------------
+
+def plural(n, word, many=None):
+    return "%d %s" % (n, word if n == 1 else (many or word + "s"))
+
+
+def blocker_key(finding):
+    """The same blocker across passes: rule and section, ignoring case and spacing."""
+    return (finding["rule"], FINDINGS._norm(finding["location"]["section"]))
+
+
+def blockers_of(entry):
+    return [f for f in entry["findings"] if f["severity"] == "blocker"]
+
+
+def resolutions(data):
+    """(answered, carried), each keyed by (pass number, finding id), for a valid record.
+
+    answered: the decision blockers whose question in that pass has an
+    answer that resolves them (RESOLVING), mapped to the question.
+    carried: the slicer's slicer.oversized blockers in a pass after the user
+    answered `keep` to it, mapped to that question; they aren't open. Only a
+    kept skim answer carries: any other decision raised again may be a new
+    question under the same rule and section, so it is open and asked again.
+    """
+    answered = {}
+    for q in data.get("questions") or []:
+        if q["trigger"] in ("decision", "skim") and q["finding"] and q["answer"] and q["answer"]["choice"] in RESOLVING:
+            answered[(q["pass"], q["finding"])] = q
+    carried, earlier = {}, {}
+    for p, entry in enumerate(data["passes"], 1):
+        decisions = [f for f in blockers_of(entry) if f["kind"] == "decision"]
+        for f in decisions:
+            if blocker_key(f) in earlier and (p, f["id"]) not in answered:
+                carried[(p, f["id"])] = earlier[blocker_key(f)]
+        for f in decisions:
+            q = answered.get((p, f["id"]))
+            if q and q["trigger"] == "skim" and blocker_key(f) not in earlier:
+                earlier[blocker_key(f)] = q
+    return answered, carried
+
+
+def open_of(entry, pass_no, carried):
+    """The pass's open blockers: its blockers, less the decisions an earlier answer already resolved."""
+    return [f for f in blockers_of(entry) if (pass_no, f["id"]) not in carried]
+
+
+def open_counts(data):
+    """The open-blocker count of every pass of a valid record, in order."""
+    _, carried = resolutions(data)
+    return [len(open_of(p, i, carried)) for i, p in enumerate(data["passes"], 1)]
 
 
 def question_id(pass_no, trigger, finding):

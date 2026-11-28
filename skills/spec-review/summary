@@ -10,7 +10,8 @@ Usage:
 The summary the user reads before accepting a spec (docs/spec-review/
 ROADMAP.md, v0.6, and pauses.md next to this script). It is rendered from
 the record alone, checked with the record validator first: the hard gates
-and words of every pass, the risk tier and the sign-off, the blockers
+and words of every pass, the risk tier and the sign-off (with the pass that
+first raised each risk a finding raised, v0.8), the blockers
 resolved since pass 1 (fixed, or answered by the user), the open blockers
 and the nits of the last pass, every question with its options and answer,
 and the pass history. It ends by stating that the accepted spec is the
@@ -108,8 +109,9 @@ def render(spec, record_path=None):
     n = len(passes)
     last = passes[-1]
     questions = data.get("questions") or []
-    answered, carried = CONVERGE.resolutions(data)
-    opened = [CONVERGE.open_of(p, i, carried) for i, p in enumerate(passes, 1)]
+    answered, carried = RECORD.resolutions(data)
+    # The one counting rule (record.open_of), the same as the record's open_blockers and converge's.
+    opened = [RECORD.open_of(p, i, carried) for i, p in enumerate(passes, 1)]
     current = opened[-1]
 
     out = ["Review summary: %s" % spec, ""]
@@ -129,6 +131,11 @@ def render(spec, record_path=None):
         else:
             signed = "signed off by %s on %s" % (so["signed_off_by"], so["signed_off_on"])
         out.append("Risk:      high (%s); %s" % (shown, signed))
+        for r in risk["risks"]:
+            raised = next(((i, f) for i, p in enumerate(passes, 1) for f in p["findings"] if f["risk"] == r), None)
+            if raised:
+                out.append("           %s: raised in pass %d by %s (%s); a risk a pass raises stays raised for this review" % (
+                    r, raised[0], raised[1]["id"], raised[1]["rule"]))
     pending = [f for f in current if (n, f["id"]) in answered]
     if not current:
         result = "no open blockers at pass %d" % n
