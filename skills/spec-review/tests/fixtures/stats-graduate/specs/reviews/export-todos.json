@@ -1,0 +1,89 @@
+{
+  "spec": "export-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 40,
+            "ref": "AC-3"
+          },
+          "evidence": "then the export fails gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "ambiguity.vague-prose",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": 9,
+            "ref": null
+          },
+          "evidence": "so exporting stays painless",
+          "concrete_question": "What does the word mean here?",
+          "suggested_fix": "Drop the word or give its number.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-3",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.missing-error-state",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 36,
+            "ref": "AC-2"
+          },
+          "evidence": "When the user runs `todo export out.json`",
+          "concrete_question": "What happens when the file can't be read?",
+          "suggested_fix": "Add an AC: exits 1, prints `cannot read <path>`, changes nothing.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 2,
+      "words": 610,
+      "gates": "passed"
+    },
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 41,
+            "ref": "AC-4"
+          },
+          "evidence": "and the export finishes quickly",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 1,
+      "words": 650,
+      "gates": "passed"
+    }
+  ]
+}

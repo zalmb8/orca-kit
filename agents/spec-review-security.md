@@ -22,16 +22,16 @@ Don't read other specs, `specs/reviews/`, `.env` or other secret files, or anyth
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level. The Graduates column says whether repeated findings of a rule may be proposed as a deterministic check (`check` for the spec checker), or `no` for a judgement call; it never changes what you report:
 
-| Rule | Level | Report when |
-|---|---|---|
-| `security.trust-boundary` | blocker | Data from outside the program's control (user input, files, the store, network responses, other users' content) reaches something that interprets it, a shell, a file path, SQL, HTML, a URL opener, a deserializer, with no stated validation or safe API. |
-| `security.data-flow` | blocker | Credentials, personal data, or data the spec or the security policy marks as sensitive goes somewhere the spec doesn't state or protect: logs, error messages, the network, another user. |
-| `security.auth-scope` | blocker | An action needs authentication or authorization the spec doesn't state, or grants broader access than the goal needs. |
-| `security.failure-mode` | blocker | A stated failure behavior leaves an insecure state: it fails open, leaks internals or secrets in an error, or leaves sensitive data readable by others. |
-| `security.policy-conflict` | blocker | The spec breaks an explicit rule in the repo's security policy. |
-| `security.hardening` | nit | A protection that costs nothing isn't stated (a new file's mode, owner-only permissions, an atomic write), and nothing in the spec as written is exploitable or leaks sensitive data without it. |
+| Rule | Level | Graduates | Report when |
+|---|---|---|---|
+| `security.trust-boundary` | blocker | no | Data from outside the program's control (user input, files, the store, network responses, other users' content) reaches something that interprets it, a shell, a file path, SQL, HTML, a URL opener, a deserializer, with no stated validation or safe API. |
+| `security.data-flow` | blocker | no | Credentials, personal data, or data the spec or the security policy marks as sensitive goes somewhere the spec doesn't state or protect: logs, error messages, the network, another user. |
+| `security.auth-scope` | blocker | no | An action needs authentication or authorization the spec doesn't state, or grants broader access than the goal needs. |
+| `security.failure-mode` | blocker | no | A stated failure behavior leaves an insecure state: it fails open, leaks internals or secrets in an error, or leaves sensitive data readable by others. |
+| `security.policy-conflict` | blocker | no | The spec breaks an explicit rule in the repo's security policy. |
+| `security.hardening` | nit | no | A protection that costs nothing isn't stated (a new file's mode, owner-only permissions, an atomic write), and nothing in the spec as written is exploitable or leaks sensitive data without it. |
 
 Tiebreaks, so the same problem always gets the same rule: when the policy explicitly states the rule broken, it is `policy-conflict`; otherwise data being *interpreted* unsafely is `trust-boundary`, and sensitive data going *somewhere* it shouldn't is `data-flow`. Ordinary user data in a file with the default mode is `hardening`, not `data-flow`. A failure path that isn't stated at all, or one that loses data without making anything insecure (a non-atomic write), belongs to the ambiguity reviewer; report `failure-mode` only when the stated failure behavior is insecure. Report each problem once, under one rule, at the spec line that introduces it.
 

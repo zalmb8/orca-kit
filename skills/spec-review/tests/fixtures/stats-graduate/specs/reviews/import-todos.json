@@ -1,0 +1,66 @@
+{
+  "spec": "import-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 33,
+            "ref": "AC-2"
+          },
+          "evidence": "then a bad file is handled gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 47,
+            "ref": "AC-5"
+          },
+          "evidence": "and the import runs quickly on a large file",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-3",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.two-readings",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 39,
+            "ref": "AC-3"
+          },
+          "evidence": "duplicate todos are merged",
+          "concrete_question": "Which order should the list use?",
+          "suggested_fix": "(a) Sort by due date; or (b) keep insertion order.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 3,
+      "words": 700,
+      "gates": "passed"
+    }
+  ]
+}

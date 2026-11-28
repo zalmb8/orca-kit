@@ -1,0 +1,128 @@
+{
+  "spec": "organize-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 40,
+            "ref": "AC-1"
+          },
+          "evidence": "then the move finishes quickly",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 52,
+            "ref": "AC-4"
+          },
+          "evidence": "and a full project fails gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-3",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 60,
+            "ref": "AC-7"
+          },
+          "evidence": "handles a large list gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 3,
+      "words": 1400,
+      "gates": "passed"
+    },
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 52,
+            "ref": "AC-4"
+          },
+          "evidence": "and a full project fails gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 61,
+            "ref": "AC-7"
+          },
+          "evidence": "handles a large list gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 2,
+      "words": 1420,
+      "gates": "passed"
+    },
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 62,
+            "ref": "AC-7"
+          },
+          "evidence": "handles a large list gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 1,
+      "words": 1430,
+      "gates": "passed"
+    }
+  ]
+}

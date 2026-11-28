@@ -1,0 +1,66 @@
+{
+  "spec": "archive-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 31,
+            "ref": "AC-1"
+          },
+          "evidence": "then the command responds quickly",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 44,
+            "ref": "AC-4"
+          },
+          "evidence": "and a corrupt archive fails gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-3",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "ambiguity.two-readings",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 38,
+            "ref": "AC-2"
+          },
+          "evidence": "completed todos are archived when the list is closed",
+          "concrete_question": "Which order should the list use?",
+          "suggested_fix": "(a) Sort by due date; or (b) keep insertion order.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 3,
+      "words": 640,
+      "gates": "passed"
+    }
+  ]
+}

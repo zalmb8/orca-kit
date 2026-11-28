@@ -19,13 +19,13 @@ Search the whole repo root, not only the files the spec names: the point is what
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level. The Graduates column says whether repeated findings of a rule may be proposed as a deterministic check (`check` for the spec checker), or `no` for a judgement call; it never changes what you report:
 
-| Rule | Level | Report when |
-|---|---|---|
-| `blast-radius.unmentioned-contract` | blocker | The change affects a downstream contract the spec doesn't mention anywhere, and a consumer of it would break or silently misbehave: code, a script, a service or a schema that reads or relies on what changes (a parser of the command's output, a reader of the file, a consumer of the type). |
-| `blast-radius.incompatible-change` | blocker | The spec mentions the affected contract or its consumer, but changes it in a way existing consumers or stored data break on, and says nothing about how they keep working. |
-| `blast-radius.stale-reference` | nit | A doc, help or usage text, or a comment that describes what changes would become incomplete or out of date, and no code, script or stored data breaks. |
+| Rule | Level | Graduates | Report when |
+|---|---|---|---|
+| `blast-radius.unmentioned-contract` | blocker | no | The change affects a downstream contract the spec doesn't mention anywhere, and a consumer of it would break or silently misbehave: code, a script, a service or a schema that reads or relies on what changes (a parser of the command's output, a reader of the file, a consumer of the type). |
+| `blast-radius.incompatible-change` | blocker | no | The spec mentions the affected contract or its consumer, but changes it in a way existing consumers or stored data break on, and says nothing about how they keep working. |
+| `blast-radius.stale-reference` | nit | no | A doc, help or usage text, or a comment that describes what changes would become incomplete or out of date, and no code, script or stored data breaks. |
 
 Tiebreaks, so the same problem always gets the same rule: if the spec doesn't mention the affected consumer or contract at all and the consumer would break or misbehave, it is `unmentioned-contract`, even when the change also breaks it; if only a description of it goes stale, it is `stale-reference`. A doc that other code parses, or that users' scripts rely on as a format, is a contract, not a reference. Report one finding per spec line that makes a change, at that line, and name every consumer it affects, with its path, in `evidence`.
 
