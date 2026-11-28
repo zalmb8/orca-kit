@@ -1,0 +1,287 @@
+{
+  "spec": "oscillation-by-finding-location",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "ambiguity.two-readings",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 45,
+            "ref": null
+          },
+          "evidence": "then every table row whose last cell is `<ref>`",
+          "concrete_question": "Does an edge-case row whose AC cell lists more than one ID (for example `AC-2, AC-7`) belong to the location of each ID it lists, or only to a ref that equals the whole cell?",
+          "suggested_fix": "The contract on line 45 says the last cell must *be* `<ref>`, an exact match. D-1 (line 117, \"every edge-case row whose AC cell names it\") and AC-1 (line 54, \"any edge-case row naming AC-5\") say \"names\", which reads as \"contains\". Pick one and use the same wording on lines 45, 54, 60 and 117: (a) exact match: the row counts only when its last cell, trimmed and ignoring case, equals the ref, so a row with `AC-2, AC-7` belongs to neither AC; or (b) containment: the last cell is split on commas, and the row counts for every ID in it after trimming and ignoring case. Then add an edge-case row for a multi-ID AC cell.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "ambiguity.unstated-detail",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 47,
+            "ref": null
+          },
+          "evidence": "Oscillation error: `blocker <rule> (<id>, <kind>) is new in pass <n>, in <ref>, which the revision changed`",
+          "concrete_question": "When the finding's ref differs from the spec's ID only in case or spaces (for example ` ac-5 `), does `<ref>` in the oscillation and late messages print the finding's raw ref or the ID as the spec writes it?",
+          "suggested_fix": "State the form of `<ref>` in the messages on lines 47 and 48, for example: \"`<ref>` is the finding's ref with surrounding spaces trimmed, case kept as given.\"",
+          "risk": null
+        },
+        {
+          "id": "architecture-1",
+          "reviewer": "architecture",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "architecture.codebase-drift",
+          "location": {
+            "section": "Boundaries & Decision Log",
+            "line": 129,
+            "ref": "D-1"
+          },
+          "evidence": "**D-4:** The two oscillation fixtures move pass 2's new blocker to `ref: AC-4`, and new fixtures cover an untouched AC. (skills/spec-review/tests/fixtures/pause-oscillation/specs/reviews/archive-completed-todos.json:68-76 has the same shape, with pass 2's new blocker `ambiguity-5` at `\"ref\": \"AC-1\"` while only AC-4 changed between previous/ and specs/. skills/spec-review/tests/test_pause.py:44 expects `\"pause-oscillation\": (1, \"pause at pass 2: ...\", \"loop\")`, and line 193 expects loop_reasons to include `oscillation`. Under the new rule this fixture's blocker becomes late, so pause no longer sees an oscillation stop. AC-10 depends on that stop, and line 112 forbids loosening existing tests.)",
+          "concrete_question": "Should the third fixture with this shape, `pause-oscillation`, also move pass 2's new blocker to `ref: AC-4`, so test_pause.py's oscillation pause and AC-10 still have an oscillation stop?",
+          "suggested_fix": "Name three fixtures in D-4, AC-11 and Interfaces & Data Contracts `Existing:`, not two. Add `skills/spec-review/tests/fixtures/pause-oscillation/` (same shape: `ambiguity-5` at `ref: AC-1`, only AC-4 changed) and `skills/spec-review/tests/test_pause.py` (`EXPECTED`, `test_loop_questions_name_the_reason`), and state that its new blocker also moves to `ref: AC-4` so its `EXPECTED` entry stays unchanged.",
+          "risk": null
+        },
+        {
+          "id": "architecture-2",
+          "reviewer": "architecture",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "architecture.codebase-drift",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 47,
+            "ref": null
+          },
+          "evidence": "Oscillation error: `blocker <rule> (<id>, <kind>) is new in pass <n>, in <ref>, which the revision changed`; the section text stays for the section fallback. (skills/spec-review/tests/test_loop.py:201 asserts `\"ambiguity.untestable-ac (ambiguity-5, fix) is new in pass 2, in a section the revision changed\"` on loop-oscillation-fewer. Once D-4 moves that blocker to `ref: AC-4`, the message becomes `in AC-4, which the revision changed` and the assertion fails. skills/spec-review/tests/test_pause.py:218 asserts the old pause wording `\"Pass 2 has a new blocker in a section the last revision changed\"`, which line 50 replaces. Line 112 says \"Never: Deleting or loosening an existing test in `skills/spec-review/tests/`... to make the Verification Gate pass\", and the spec doesn't say these assertions are rewritten.)",
+          "concrete_question": "Should test_loop.py:201 and test_pause.py:218 be rewritten to expect the new oscillation and pause wording, as part of the change rather than as a loosened test?",
+          "suggested_fix": "Add both assertions to Interfaces & Data Contracts `Existing:`. State that test_loop.py `test_new_blockers_stop_even_when_the_count_falls` now expects `is new in pass 2, in AC-4, which the revision changed`, and that test_pause.py `test_loop_questions_name_the_reason` expects `Pass 2 has a new blocker in a part of the spec the last revision changed`. Add a Boundaries line saying that updating these two expected strings to the new contract is allowed, so it doesn't fall under the 'Never' on tests.",
+          "risk": null
+        },
+        {
+          "id": "blast-radius-1",
+          "reviewer": "blast-radius",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "blast-radius.unmentioned-contract",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 46,
+            "ref": null
+          },
+          "evidence": "\"A finding's location changed when the ref's `location_text` differs between `--previous` and the spec in its section, or is `None` in exactly one; when `None` in both, when the section changed (today's rule).\" (consumed by skills/spec-review/tests/fixtures/pause-oscillation/: it is built like loop-oscillation. Pass 2's new blocker ambiguity-5 has `ref: AC-1`, and AC-1 is the same in previous/ and specs/; only AC-4 and its edge-case row changed. The other new blocker, blast-radius-1, is in the unchanged Interfaces section. Under the new rule both are late, and open blockers go 2 -> 3, so `converge` gives `stop at pass 2: no-progress` instead of oscillation. Tests that break: skills/spec-review/tests/test_pause.py line 193 `test_each_trigger_has_a_fixture` expects loop reasons {cap, oscillation, no-progress, bloat-growth}, and line 218 `test_loop_questions_name_the_reason` expects the oscillation text for pause-oscillation. The spec's D-4 and AC-11 move only the two loop-oscillation fixtures to `ref: AC-4`, and its Never section forbids loosening existing tests.)",
+          "concrete_question": "Should the pause-oscillation fixture's pass 2 new blocker also move to `ref: AC-4`, so it still stops with oscillation under the location rule?",
+          "suggested_fix": "List skills/spec-review/tests/fixtures/pause-oscillation/ and skills/spec-review/tests/test_pause.py under Existing:. Extend D-4 and AC-11 to cover pause-oscillation: move ambiguity-5 to `ref: AC-4` in its record, and state that test_pause.py's EXPECTED and the loop-reason set stay unchanged.",
+          "risk": "breaking-change"
+        },
+        {
+          "id": "blast-radius-2",
+          "reviewer": "blast-radius",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "blast-radius.unmentioned-contract",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 50,
+            "ref": null
+          },
+          "evidence": "\"`pause` `LOOP_TEXT[\"oscillation\"]`: `Pass %(n)d has a new blocker in a part of the spec the last revision changed, so another pass would trade one problem for another.`\" (asserted by skills/spec-review/tests/test_pause.py line 218, `test_loop_questions_name_the_reason`: `\"pause-oscillation\": \"Pass 2 has a new blocker in a section the last revision changed\"`. That substring no longer appears once the text says \"a part of the spec\". The spec lists only test_loop.py among the tests, and its Never section forbids editing existing tests to make the gate pass.)",
+          "concrete_question": "May the existing assertion in test_pause.py line 218 be updated to the new oscillation wording as part of this change?",
+          "suggested_fix": "List skills/spec-review/tests/test_pause.py (`test_loop_questions_name_the_reason`) under Existing:, and say that its pause-oscillation expectation changes to `Pass 2 has a new blocker in a part of the spec the last revision changed`. That is an update to the new contract, not a loosening, so it is allowed by the Never rule.",
+          "risk": null
+        },
+        {
+          "id": "blast-radius-3",
+          "reviewer": "blast-radius",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "blast-radius.incompatible-change",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 47,
+            "ref": null
+          },
+          "evidence": "\"Oscillation error: `blocker <rule> (<id>, <kind>) is new in pass <n>, in <ref>, which the revision changed`; the section text stays for the section fallback.\" (skills/spec-review/tests/test_loop.py line 201, `test_new_blockers_stop_even_when_the_count_falls`, asserts `ambiguity.untestable-ac (ambiguity-5, fix) is new in pass 2, in a section the revision changed` on loop-oscillation-fewer. After D-4 moves that blocker to `ref: AC-4`, the line reads `... in AC-4, which the revision changed`, so the assertion fails. The spec lists test_loop.py only for `EXPECTED` and `ChangedSections`, says nothing about this assertion, and its Never section forbids loosening existing tests.)",
+          "concrete_question": "Should test_loop.py line 201's assertion be updated to the new `in AC-4, which the revision changed` wording when the fixture's ref moves to AC-4?",
+          "suggested_fix": "Under Existing:, extend the test_loop.py entry to name `test_new_blockers_stop_even_when_the_count_falls`. In AC-11, say its expected text becomes `ambiguity.untestable-ac (ambiguity-5, fix) is new in pass 2, in AC-4, which the revision changed`. Also confirm that `test_oscillation_names_only_blockers_in_changed_sections` still holds.",
+          "risk": "breaking-change"
+        },
+        {
+          "id": "blast-radius-4",
+          "reviewer": "blast-radius",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "blast-radius.stale-reference",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 46,
+            "ref": null
+          },
+          "evidence": "\"A finding's location changed when the ref's `location_text` differs between `--previous` and the spec in its section ... when `None` in both, when the section changed (today's rule).\" (These still describe the whole-section rule and are not among the docs D-5 updates. skills/spec-review/converge RULE_TEXT lines 115-116, printed by `converge --rules`: `loop.oscillation`: \"... in a section the revision changed\" and `loop.late`: \"a new blocker in a section the revision didn't change ...\". The converge docstring stop-reason table, line 30: \"oscillation    the pass has a new blocker in a section the revision changed\". skills/spec-review/SKILL.md line 106: \"`oscillation` (a blocker the pass before didn't have, in a section the revision changed) ... A new blocker in a section the revision didn't change was caught late\". skills/spec-review/pauses.md line 136: \"A new blocker in a section the revision changed still stops the loop\".)",
+          "concrete_question": "Should D-5 also cover converge's RULE_TEXT entries, the docstring's stop-reason table, SKILL.md and pauses.md, so they describe the location rule?",
+          "suggested_fix": "Extend D-5 and the Existing: list with skills/spec-review/converge `RULE_TEXT` (`loop.oscillation`, `loop.late`) and the docstring's reason table, skills/spec-review/SKILL.md (the `converge` verdict paragraph), and skills/spec-review/pauses.md (the \"Oscillation and the bloat guard\" bullet). Reword each to \"in the location (AC, decision or section) the revision changed\".",
+          "risk": null
+        },
+        {
+          "id": "slicer-1",
+          "reviewer": "slicer",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "slicer.oversized",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": 13,
+            "ref": null
+          },
+          "evidence": "specs/oscillation-by-finding-location.md: 1800 words (ceiling 2000), 11 ACs. That is over both anchors: more than 10 ACs, and 90% of the word ceiling against a 75% limit. Goal: \"`skills/spec-review/converge` counts a new blocker as oscillation only when the revision changed the text at the finding's own location: the AC or decision its `location.ref` names, with the edge-case rows that point to it, in its `location.section`. With no ref, or a ref that matches nothing, it falls back to today's whole-section comparison.\"",
+          "concrete_question": "Should this become two specs, first converge's location-based oscillation check (AC-1 to AC-9 and AC-11) and then pause's new oscillation wording (AC-10), or do you want a different split, for example taking decision refs (AC-4) out on their own?",
+          "suggested_fix": "1. Location-based oscillation in converge (AC-1, AC-2, AC-3, AC-4, AC-5, AC-6, AC-7, AC-8, AC-9, AC-11): location_text, the changed-location rule with the section fallback, the oscillation and late messages that name the ref, the unchanged status line, the fixtures moved to ref AC-4, plus the docs and ROADMAP updates in D-5. It ships alone: converge gives correct verdicts and pause still works with its current wording. 2. Pause oscillation wording (AC-10): change LOOP_TEXT[\"oscillation\"] to \"a part of the spec\". It needs slice 1, because the new wording only fits once oscillation is decided by location. Build slice 1 first. Another option is to move AC-4 (D-n refs in Boundaries & Decision Log) into its own slice after slice 1. That would leave slice 1 with AC refs only and 9 ACs.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 7,
+      "words": 1800,
+      "gates": "passed"
+    },
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "ambiguity.unstated-detail",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 47,
+            "ref": null
+          },
+          "evidence": "Oscillation error: `blocker <rule> (<id>, <kind>) is new in pass <n>, in <ref>, which the revision changed`; the section text stays for the section fallback.",
+          "concrete_question": "When the finding's ref differs from the spec's ID only in case or spaces (the edge-case row's ` ac-5 `), do the oscillation error and late note print the finding's raw ref or the ID as written in the spec (`AC-5`)?",
+          "suggested_fix": "Add to the oscillation and late message contracts: `<ref>` is the finding's `location.ref` with surrounding spaces trimmed, printed as given (or, if preferred, the ID as written in the matched item). Then the edge-case row for ` ac-5 ` has a fixed expected message.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "ambiguity.unstated-detail",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 45,
+            "ref": null
+          },
+          "evidence": "the lines of every list item starting `- **<ref>:**` or `- <ref>:` with its indented continuation lines",
+          "concrete_question": "Does an item's run of indented continuation lines end at the first blank line, or does it continue past blank lines to later indented lines?",
+          "suggested_fix": "State the stop rule, e.g. 'continuation lines are the following lines that start with whitespace, ending at the first blank or non-indented line'.",
+          "risk": null
+        },
+        {
+          "id": "blast-radius-1",
+          "reviewer": "blast-radius",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "blast-radius.stale-reference",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 46,
+            "ref": null
+          },
+          "evidence": "\"A finding's location changed when the ref's `location_text` differs between `--previous` and the spec in its section, or is `None` in exactly one; when `None` in both, when the section changed (today's rule).\" Three descriptions of the section-only rule are not in D-5's list (loop.md, converge's docstring, ROADMAP) and would go out of date: skills/spec-review/SKILL.md:106 (\"`oscillation` (a blocker the pass before didn't have, in a section the revision changed) ... A new blocker in a section the revision didn't change was caught late\"); skills/spec-review/pauses.md:136 (\"A new blocker in a section the revision changed still stops the loop\"); and skills/spec-review/converge RULE_TEXT at lines 115-116, printed by `converge --rules` (\"loop.oscillation\": \"... in a section the revision changed\", \"loop.late\": \"a new blocker in a section the revision didn't change was caught late\"). Nothing parses these texts: test_loop.py's test_rules_and_help only checks that the rule IDs are present.",
+          "concrete_question": "Should this change also update the oscillation and late descriptions in SKILL.md, pauses.md and converge's RULE_TEXT to describe the location rule?",
+          "suggested_fix": "Add skills/spec-review/SKILL.md (Verdicts bullet), skills/spec-review/pauses.md (the 'Oscillation and the bloat guard' bullet) and converge's `RULE_TEXT[\"loop.oscillation\"]` / `RULE_TEXT[\"loop.late\"]` to the Existing: list and to D-5, worded as 'in the part of the spec (the finding's ref, or its section) the revision changed'. Because Ask First covers 'any output Interfaces & Data Contracts doesn't list', also list the new `--rules` texts under New:.",
+          "risk": null
+        },
+        {
+          "id": "slicer-1",
+          "reviewer": "slicer",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "slicer.oversized",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": 13,
+            "ref": null
+          },
+          "evidence": "specs/oscillation-by-finding-location.md: 1929 words (ceiling 2000), 11 ACs. \"`skills/spec-review/converge` counts a new blocker as oscillation only when the revision changed the text at the finding's own location: the AC or decision its `location.ref` names, with the edge-case rows that point to it, in its `location.section`.\" The spec has 11 ACs, over the 10-AC anchor, and 1929 words is about 96% of the ceiling, over the 75% anchor. Its ACs also cover two commands: `converge` (AC-1 to AC-9, the loop half of AC-11) and `pause` (AC-10, the pause half of AC-11).",
+          "concrete_question": "Should this become three specs, ref-scoped oscillation for list items first, then edge-case rows, then pause's wording, or do you want a different split?",
+          "suggested_fix": "1. Ref-scoped oscillation for AC and decision items (AC-1, AC-2, AC-4, AC-5, AC-6, AC-7, AC-8, AC-9, plus the loop half of AC-11: the `loop-oscillation` and `loop-oscillation-fewer` fixtures move to `ref: AC-4`, and `test_new_blockers_stop_even_when_the_count_falls` expects the new message). This slice adds `location_text` for `- **<ref>:**` and `- <ref>:` items with their indented lines, the fallback to section comparison, the new oscillation and late messages, and the unchanged status line. It ships alone because it fixes the live AC-5 false positive by itself. It also carries the D-5 doc updates to `loop.md`, the docstring and ROADMAP. 2. Edge-case rows count toward a ref's location (AC-3, plus the comma-split AC-cell edge-case row). This needs slice 1: it extends `location_text` to table rows whose last cell lists the ref. Without it, the loop is still coherent and only misses changes to edge-case rows. 3. Pause's oscillation wording (AC-10, plus the pause half of AC-11: the `pause-oscillation` fixture moves to `ref: AC-4`, and `test_loop_questions_name_the_reason` expects the new text). This is a one-string change to `LOOP_TEXT[\"oscillation\"]` and reads correctly once slice 1 makes oscillation location-based. Build slice 1 first. Slices 2 and 3 both depend only on slice 1 and can go in either order. Every AC is kept: AC-11 is split into its loop and pause halves.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 1,
+      "words": 1929,
+      "gates": "passed"
+    }
+  ],
+  "questions": [
+    {
+      "id": "pass-1.skim",
+      "pass": 1,
+      "trigger": "skim",
+      "finding": "slicer-1",
+      "question": "Should this become two specs, first converge's location-based oscillation check (AC-1 to AC-9 and AC-11) and then pause's new oscillation wording (AC-10), or do you want a different split, for example taking decision refs (AC-4) out on their own?",
+      "options": [
+        {
+          "key": "split",
+          "text": "Split it: stop this review, split the spec with orca-kit:spec into smaller specs (along the proposed slices or your own), and review each one on its own."
+        },
+        {
+          "key": "keep",
+          "text": "Keep it as one spec: the review goes on, and the slicer's blocker counts as answered."
+        }
+      ],
+      "answer": {
+        "choice": "keep",
+        "words": "Wording alone is not worth a 2nd spec, keep it as one",
+        "answered_on": "2026-11-27"
+      }
+    },
+    {
+      "id": "pass-1.ambiguity-1",
+      "pass": 1,
+      "trigger": "decision",
+      "finding": "ambiguity-1",
+      "question": "Does an edge-case row whose AC cell lists more than one ID (for example `AC-2, AC-7`) belong to the location of each ID it lists, or only to a ref that equals the whole cell?",
+      "options": [
+        {
+          "key": "a",
+          "text": "Exact match: the row counts only when its last cell, trimmed and ignoring case, equals the ref, so a row with `AC-2, AC-7` belongs to neither AC."
+        },
+        {
+          "key": "b",
+          "text": "Containment: the last cell is split on commas, and the row counts for every ID in it after trimming and ignoring case."
+        },
+        {
+          "key": "other",
+          "text": "Give your own answer: say in your own words what the spec should say."
+        },
+        {
+          "key": "open",
+          "text": "Leave it open: stop the review here, with this blocker listed as open in the summary."
+        }
+      ],
+      "answer": {
+        "choice": "b",
+        "words": "2",
+        "answered_on": "2026-11-27"
+      }
+    }
+  ]
+}
