@@ -71,7 +71,7 @@ Return **only** a JSON array of findings: no prose before or after it, no Markdo
 - `location`: `{"section": <the spec's ## heading the text is under>, "line": <its 1-based line number in the spec, as the Read tool shows it, or null>, "ref": <the AC, decision or edge-case ID such as "D-1", or null>}`. The location is always in the spec, never in the code.
 - `evidence`: the exact spec text the finding is about, quoted from the spec, followed by the conflicting source, e.g. `(docs/adr/0003-x.md: "…")`.
 - `concrete_question`: one question, ending in `?`, whose answer resolves the finding.
-- `suggested_fix`: what to change in the spec, concretely; for a `decision`, the options to choose between.
+- `suggested_fix`: what to change in the spec, concretely; for a `decision`, the options to choose between, lettered `(a) ...; or (b) ...` so each can be offered to the user as its own choice, without picking one.
 - `risk`: `null` or one risk from the list above.
 
 Example of one finding (your answer is the array, unfenced):

@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Render the orca-kit:spec-review review summary from a review record.
+
+Usage:
+  summary [--record FILE] <spec.md>
+
+  --record FILE   The review record. Defaults to specs/reviews/<slug>.json
+                  next to the spec.
+
+The summary the user reads before accepting a spec (docs/spec-review/
+ROADMAP.md, v0.6, and pauses.md next to this script). It is rendered from
+the record alone, checked with the record validator first: the hard gates
+and words of every pass, the risk tier and the sign-off, the blockers
+resolved since pass 1 (fixed, or answered by the user), the open blockers
+and the nits of the last pass, every question with its options and answer,
+and the pass history. It ends by stating that the accepted spec is the
+single source of truth for code generation.
+
+The spec is read only for its status and its word count. When its words
+differ from what the last pass recorded, a note says the summary describes
+the spec that pass reviewed, not the file as it is now.
+
+The same record and spec always give the same summary. This script only
+reads files; it never writes the record, an answer or a sign-off, and it
+never says a spec is ready to build.
+
+Exit codes: 0 rendered, 2 a usage error, an unreadable spec, or a record
+that is missing, invalid, or has no passes.
+
+Python 3 standard library only; no install step.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import re
+import sys
+from collections import Counter
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_sibling(name):
+    loader = importlib.machinery.SourceFileLoader("spec_review_" + name, os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+CONVERGE = load_sibling("converge")
+GATE = CONVERGE.GATE
+RECORD = CONVERGE.RECORD
+plural = CONVERGE.plural
+
+USAGE = "usage: summary [--record FILE] <spec.md>"
+STATUS_RE = re.compile(r"^status:\s*([A-Za-z]+)")
+SOURCE_OF_TRUTH = ("Once you accept it, the spec is the single source of truth for code generation: build from %s as "
+                   "accepted, not from this summary, the findings or the conversation. Accepting it is your explicit "
+                   "yes, given through orca-kit:spec refine; this review doesn't accept it, and doesn't say it is ready to build.")
+
+
+class InputError(Exception):
+    pass
+
+
+def spec_status(doc):
+    for i in range(min(doc.body_start, len(doc.lines))):
+        m = STATUS_RE.match(doc.lines[i])
+        if m:
+            return m.group(1)
+    return "unknown"
+
+
+def where(f):
+    loc = f["location"]
+    out = loc["section"]
+    if loc["line"]:
+        out += ", line %d" % loc["line"]
+    if loc["ref"]:
+        out += " (%s)" % loc["ref"]
+    return out
+
+
+def tally(blockers, nits):
+    fixes = sum(1 for f in blockers if f["kind"] == "fix")
+    return "%s (%d fix, %d decision), %s" % (plural(len(blockers), "blocker"), fixes, len(blockers) - fixes, plural(len(nits), "nit"))
+
+
+def render(spec, record_path=None):
+    try:
+        with open(spec, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise InputError("%s:1: error [usage] file: can't read the spec (%s). Fix: Pass the path to a spec .md file." % (spec, e))
+    rec = record_path or GATE.record_path(spec)
+    if not os.path.isfile(rec):
+        raise InputError("%s:1: error [summary.record] file: no review record at %s. Fix: Run the review first; the summary is rendered from its record." % (spec, rec))
+    code, rec_lines, data = RECORD.check_file(rec)
+    if data is None:
+        raise InputError("\n".join(rec_lines + ["%s:1: error [summary.record] file: the review record %s isn't valid. "
+                                                "Fix: Correct it; `record --help` shows the format." % (spec, rec)]))
+    passes = data.get("passes")
+    if not passes:
+        raise InputError("%s:1: error [summary.record] file: %s has no passes. Fix: Record the review pass first." % (spec, rec))
+
+    doc = GATE.Doc(text)
+    words = GATE.count_words(doc)
+    n = len(passes)
+    last = passes[-1]
+    questions = data.get("questions") or []
+    answered, carried = CONVERGE.resolutions(data)
+    opened = [CONVERGE.open_of(p, i, carried) for i, p in enumerate(passes, 1)]
+    current = opened[-1]
+
+    out = ["Review summary: %s" % spec, ""]
+    out.append("Spec:      %s, status %s, %s now" % (spec, spec_status(doc), plural(words, "word")))
+    gates = last.get("gates")
+    out.append("Gates:     %s on pass %d, the last pass" % ({"passed": "passed", "failed": "FAILED"}.get(gates, "not recorded"), n)
+               if gates else "Gates:     not recorded for pass %d; run gate on the spec" % n)
+    risk, so = data["risk"], data["sign_off"]
+    if risk["tier"] == "low":
+        out.append("Risk:      low; no sign-off needed")
+    else:
+        shown = ", ".join(risk["risks"])
+        if so is None:
+            signed = "sign-off needed, not given"
+        elif sorted(so["risks"]) != sorted(risk["risks"]):
+            signed = "sign-off stale: %s signed off on %s for %s" % (so["signed_off_by"], so["signed_off_on"], ", ".join(so["risks"]))
+        else:
+            signed = "signed off by %s on %s" % (so["signed_off_by"], so["signed_off_on"])
+        out.append("Risk:      high (%s); %s" % (shown, signed))
+    pending = [f for f in current if (n, f["id"]) in answered]
+    if not current:
+        result = "no open blockers at pass %d" % n
+    else:
+        result = "%s open at pass %d" % (plural(len(current), "blocker"), n)
+        if pending:
+            result += " (%d answered, not yet applied by a revision)" % len(pending)
+    out.append("Blockers:  %s" % result)
+    out.append("Questions: %s" % ("none asked" if not questions else "%d asked, %d answered" % (
+        len(questions), sum(1 for q in questions if q["answer"] is not None))))
+    if "words" in last and last["words"] != words:
+        out += ["", "Note: %s has %d words now, but pass %d reviewed %d. This summary describes the spec that pass reviewed "
+                    "(a rejected revision was put back, or the spec changed after the review); review it again before accepting." % (
+                        spec, words, n, last["words"])]
+
+    out += ["", "Pass history"]
+    for i, p in enumerate(passes, 1):
+        blockers = opened[i - 1]
+        nits = [f for f in p["findings"] if f["severity"] == "nit"]
+        line = "  pass %d: %s" % (i, tally(blockers, nits))
+        if "words" in p:
+            line += "; %s" % plural(p["words"], "word")
+        if "gates" in p:
+            line += "; gates %s" % p["gates"]
+        out.append(line)
+
+    out += ["", "Resolved since pass 1"]
+    resolved = []
+    if n > 1:
+        room = Counter(CONVERGE.blocker_key(f) for f in current)
+        seen = set(CONVERGE.blocker_key(f) for f in passes[-1]["findings"] if (n, f["id"]) in carried)  # listed below
+        for i in range(n - 1):
+            for f in opened[i]:
+                key = CONVERGE.blocker_key(f)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if room[key] > 0:
+                    continue
+                q = answered.get((i + 1, f["id"]))
+                how = "answered by you (%s), then revised" % q["id"] if q else "fixed by a revision"
+                resolved.append("  - %s in %s (%s, %s): raised in pass %d, %s" % (f["rule"], f["location"]["section"], f["severity"], f["kind"], i + 1, how))
+    for f in passes[-1]["findings"]:
+        q = carried.get((n, f["id"]))
+        if q:
+            resolved.append("  - %s in %s (%s, %s): answered by you in pass %d (%s), raised again in pass %d and not reopened" % (
+                f["rule"], f["location"]["section"], f["severity"], f["kind"], q["pass"], q["id"], n))
+    out += resolved or ["  none"]
+
+    out += ["", "Open at pass %d" % n, "  Blockers:"]
+    if not current:
+        out.append("    none")
+    for f in current:
+        q = answered.get((n, f["id"]))
+        note = " [answered (%s), not yet applied]" % q["id"] if q else ""
+        out.append("    - %s (%s, from %s) in %s: %s%s" % (f["rule"], f["kind"], f["reviewer"], where(f), f["concrete_question"], note))
+    nits = [f for f in last["findings"] if f["severity"] == "nit"]
+    out.append("  Nits (comments; nothing has to change):")
+    if not nits:
+        out.append("    none")
+    for f in nits:
+        out.append("    - %s (from %s) in %s: %s" % (f["rule"], f["reviewer"], where(f), f["concrete_question"]))
+
+    out += ["", "Questions and answers"]
+    if not questions:
+        out.append("  none")
+    for q in questions:
+        out.append("  %s (%s, pass %d): %s" % (q["id"], q["trigger"], q["pass"], q["question"]))
+        for i, o in enumerate(q["options"], 1):
+            out.append("    %d. %s" % (i, o["text"]))
+        a = q["answer"]
+        if a is None:
+            out.append("    Not answered yet.")
+        else:
+            keys = [o["key"] for o in q["options"]]
+            out.append("    Answered on %s: option %d (%s), in your words: \"%s\"" % (
+                a["answered_on"], keys.index(a["choice"]) + 1, a["choice"], a["words"]))
+
+    out += ["", "Sign-off"]
+    if so is None:
+        out.append("  none recorded" + ("; this high-risk spec can't pass review without one" if risk["tier"] == "high" else ""))
+    else:
+        out.append("  %s on %s, for %s" % (so["signed_off_by"], so["signed_off_on"], ", ".join(so["risks"])))
+
+    out += ["", SOURCE_OF_TRUTH % spec]
+    return out
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if any(a in ("-h", "--help") for a in argv):
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    record, paths, i = None, [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--record" or arg.startswith("--record="):
+            if record is not None:
+                sys.stderr.write("summary: --record given twice\n%s\n" % USAGE)
+                return 2
+            if arg == "--record":
+                if i + 1 >= len(argv):
+                    sys.stderr.write("summary: --record needs a value\n%s\n" % USAGE)
+                    return 2
+                record, i = argv[i + 1], i + 2
+            else:
+                record, i = arg.split("=", 1)[1], i + 1
+            continue
+        if arg.startswith("-") and arg != "-":
+            sys.stderr.write("summary: unknown option %r\n%s\n" % (arg, USAGE))
+            return 2
+        paths.append(arg)
+        i += 1
+    if len(paths) != 1:
+        sys.stderr.write("summary: give exactly one spec\n%s\n" % USAGE)
+        return 2
+    try:
+        lines = render(paths[0], record)
+    except InputError as e:
+        print(str(e))
+        return 2
+    for line in lines:
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

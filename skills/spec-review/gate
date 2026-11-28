@@ -1267,14 +1267,28 @@ def finding_reasons(paths):
             errors.extend(lines)
             continue
         with open(path, encoding="utf-8") as f:
-            for finding in json.load(f):
-                if finding["risk"] is None:
-                    continue
-                loc = finding["location"]
-                reasons.append(Reason(finding["risk"], loc["line"] or 1, loc["section"],
-                                      "finding %s (%s %s from %s) raises it" % (
-                                          finding["id"], finding["severity"], finding["kind"], finding["reviewer"])))
+            reasons.extend(reasons_from_findings(json.load(f)))
     return reasons, errors
+
+
+def reasons_from_findings(findings):
+    """[Reason] for the findings (already valid) that name a risk."""
+    out = []
+    for finding in findings:
+        if finding["risk"] is None:
+            continue
+        loc = finding["location"]
+        out.append(Reason(finding["risk"], loc["line"] or 1, loc["section"],
+                          "finding %s (%s %s from %s) raises it" % (
+                              finding["id"], finding["severity"], finding["kind"], finding["reviewer"])))
+    return out
+
+
+def risks_of(doc, config, findings):
+    """(sorted reasons, risks) for a spec and a list of valid findings, as risk_step computes them."""
+    reasons = classify(doc, config) + reasons_from_findings(findings)
+    reasons.sort(key=lambda r: (r.line, RISKS.index(r.risk), r.message))
+    return reasons, sorted({r.risk for r in reasons}, key=RISKS.index)
 
 
 def record_path(spec_path):

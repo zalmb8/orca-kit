@@ -16,7 +16,13 @@ review-record.md next to this script):
     "risk": {"tier": "low" | "high", "risks": [<risk>, ...], "reasons": [<text>, ...]},
     "sign_off": null | {"signed_off_by": <name>, "signed_off_on": "YYYY-MM-DD", "risks": [<risk>, ...]},
     "passes": [{"findings": [<finding>, ...], "open_blockers": <n>,
-                "words": <n>, "gates": "passed" | "failed"}, ...]
+                "words": <n>, "gates": "passed" | "failed"}, ...],
+    "questions": [{"id": "pass-<n>.<finding id> | pass-<n>.skim | pass-<n>.loop",
+                   "pass": <n>, "trigger": "decision" | "skim" | "loop",
+                   "finding": <finding id> | null, "question": <text>,
+                   "options": [{"key": <key>, "text": <text>}, ...],
+                   "answer": null | {"choice": <key>, "words": <the user's reply>,
+                                     "answered_on": "YYYY-MM-DD"}}, ...]
   }
 
 spec, risk and sign_off are required; only `sign_off` may be null. `passes`
@@ -26,8 +32,13 @@ validator, ids unique, no two with the same rule, location and risk, as
 `findings --merge` leaves them) and its count of blockers, and optionally
 (v0.5, the revision loop) the spec's word count and its gate result for that
 pass. Every risk a finding in the last pass names must be in risk.risks.
-Unknown fields are rejected. Later releases add their own fields (the
-questions asked and answered) to this list.
+`questions` (v0.6, the human-in-the-loop pauses; pauses.md) is optional too,
+and needs `passes`: one entry per question `pause` printed and the skill
+asked, with the options shown and, once the user replies, their answer. A
+`decision` question names a decision blocker of its pass, a `skim` question
+the slicer's `slicer.oversized` blocker or nothing (the length ceiling), a
+`loop` question nothing; each trigger has its fixed option keys, and the
+answer's choice is one of them. Unknown fields are rejected.
 
 Prints one line per problem:
   <file>:<line>: error [<rule>] <field>: <problem>. Fix: <what to do>.
@@ -35,10 +46,11 @@ then one summary line per file:
   <file>: ok, risk high (migration), signed off by <name> on <date>
   <file>: ok, risk low, no sign-off
   <file>: ok, risk low, no sign-off, 1 pass: 3 findings: 1 blocker (0 decision), 2 nit
+  <file>: ok, risk low, no sign-off, 1 pass: 3 findings: ..., 1 question (1 answered)
   <file>: <n> problem(s)
 
 This script only reads records. It never writes one, and never fills in a
-sign-off: only the user's explicit yes does that.
+sign-off or an answer: only the user's own reply does that.
 
 Exit codes: 0 every record is valid, 1 a record breaks a rule, 2 a usage
 error or a file that isn't a JSON object.
@@ -69,13 +81,26 @@ FINDINGS = load_sibling("findings")
 RISKS = ("auth", "security-boundary", "data-model", "migration", "billing", "public-api", "breaking-change")
 TIERS = ("low", "high")
 FIELDS = ("spec", "risk", "sign_off")
-OPTIONAL_FIELDS = ("passes",)
+OPTIONAL_FIELDS = ("passes", "questions")
 PASS_FIELDS = ("findings", "open_blockers")
 OPTIONAL_PASS_FIELDS = ("words", "gates")
 GATE_RESULTS = ("passed", "failed")
 MAX_PASSES = 3
 RISK_FIELDS = ("tier", "risks", "reasons")
 SIGN_OFF_FIELDS = ("signed_off_by", "signed_off_on", "risks")
+QUESTION_FIELDS = ("id", "pass", "trigger", "finding", "question", "options", "answer")
+ANSWER_FIELDS = ("choice", "words", "answered_on")
+TRIGGERS = ("skim", "decision", "loop")
+# The option keys each trigger may show, in order (pauses.md). `pause` prints them.
+OPTION_KEYS = {
+    "decision": tuple(tuple("abcde"[:k]) + ("other", "open") for k in range(2, 6)) + (("other", "open"),),
+    "skim": (("split", "keep"), ("split", "trim")),
+    "loop": (("finish", "refine"),),
+}
+# Choices that answer the question and let the loop go on; every other choice ends the review.
+# A decision's lettered options (a, b, ...) are the reviewer's alternatives, as pause splits them.
+RESOLVING = ("a", "b", "c", "d", "e", "other", "keep")
+SKIM_RULE = "slicer.oversized"
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -89,6 +114,11 @@ RULE_TEXT = {
                      "no duplicate rule, location and risk) and open_blockers (its number of blockers), and optionally "
                      "words (the spec's word count) and gates (passed | failed); "
                      "the last pass's risks are in risk.risks" % MAX_PASSES,
+    "record.questions": "questions, if present, needs passes and is a list of questions, each with exactly "
+                        + ", ".join(QUESTION_FIELDS) + ": a unique id pass-<n>.<finding id> | pass-<n>.skim | pass-<n>.loop "
+                        "matching its pass, trigger and finding; a decision question names a decision blocker of its pass, "
+                        "a skim question the slicer.oversized blocker or null, a loop question null; options are the trigger's "
+                        "fixed keys with text; answer is null or the choice (one of the keys), the user's words and the date",
 }
 
 USAGE = ("usage: record <specs/reviews/<slug>.json> [...]\n"
@@ -217,6 +247,8 @@ def check_record(data, text, stem):
                         "list exactly the risks shown to the user when they said yes")
     if "passes" in data:
         out.extend(check_passes(data, text))
+    if "questions" in data:
+        out.extend(check_questions(data, text))
     return sorted(out, key=lambda p: p[0])
 
 
@@ -294,6 +326,125 @@ def check_passes(data, text):
     return out
 
 
+def question_id(pass_no, trigger, finding):
+    """The id a question must have: pass-<n>.<finding id>, pass-<n>.skim or pass-<n>.loop."""
+    return "pass-%d.%s" % (pass_no, finding if trigger == "decision" else trigger)
+
+
+def is_date(value):
+    if not (isinstance(value, str) and DATE_RE.match(value)):
+        return False
+    try:
+        datetime.date(int(value[:4]), int(value[5:7]), int(value[8:]))
+    except ValueError:
+        return False
+    return True
+
+
+def check_questions(data, text):
+    """[(line, rule, field, problem, fix)] for the optional questions list (v0.6)."""
+    out = []
+    line = line_of(text, "questions")
+
+    def bad(field, problem, fix):
+        out.append((line, "record.questions", field, problem, fix))
+
+    questions = data["questions"]
+    passes = data.get("passes")
+    if not isinstance(questions, list):
+        bad("questions", "questions is %s, not a list" % show(questions), "give one entry per question asked, or leave questions out")
+        return out
+    if questions and not (isinstance(passes, list) and passes):
+        bad("questions", "questions has entries but the record has no passes", "record the review pass before the questions it raised")
+        return out
+    seen = {}
+    for i, q in enumerate(questions, 1):
+        field = "questions[%d]" % i
+        if not isinstance(q, dict):
+            bad(field, "question %d is %s, not an object" % (i, show(q)), "give {\"id\": ..., \"pass\": ..., ...} as pause printed it")
+            continue
+        missing = [f for f in QUESTION_FIELDS if f not in q]
+        extra = sorted(f for f in q if f not in QUESTION_FIELDS)
+        if missing:
+            bad(field, "question %d is missing %s" % (i, ", ".join(missing)), "give every field: " + ", ".join(QUESTION_FIELDS))
+        if extra:
+            bad(field, "question %d has unknown field%s %s" % (i, "s" if len(extra) > 1 else "", ", ".join(extra)),
+                "keep only " + ", ".join(QUESTION_FIELDS))
+        if missing:
+            continue
+        trigger, pass_no, finding = q["trigger"], q["pass"], q["finding"]
+        if trigger not in TRIGGERS:
+            bad(field + ".trigger", "trigger is %s, not one of %s" % (show(trigger), ", ".join(TRIGGERS)), "copy the trigger pause printed")
+            continue
+        if not (isinstance(pass_no, int) and not isinstance(pass_no, bool) and 1 <= pass_no <= len(passes)):
+            bad(field + ".pass", "pass is %s, not a pass of this record (1 to %d)" % (show(pass_no), len(passes)),
+                "give the number of the pass the question was asked after")
+            continue
+        entry = passes[pass_no - 1]
+        findings = entry.get("findings") if isinstance(entry, dict) else None
+        by_id = dict((f.get("id"), f) for f in findings if isinstance(f, dict)) if isinstance(findings, list) else {}
+        if trigger == "loop":
+            if finding is not None:
+                bad(field + ".finding", "a loop question names finding %s" % show(finding), "set finding to null")
+        elif trigger == "skim" and finding is None:
+            pass
+        else:
+            f = by_id.get(finding) if isinstance(finding, str) else None
+            if f is None:
+                bad(field + ".finding", "finding %s isn't a finding of pass %d" % (show(finding), pass_no),
+                    "name the finding id pause printed for this question")
+            elif f.get("severity") != "blocker" or f.get("kind") != "decision":
+                bad(field + ".finding", "finding %s is a %s %s, not a decision blocker" % (show(finding), f.get("severity"), f.get("kind")),
+                    "ask questions only for decision blockers")
+            elif trigger == "skim" and f.get("rule") != SKIM_RULE:
+                bad(field + ".finding", "a skim question names %s, a %s finding, not %s" % (show(finding), f.get("rule"), SKIM_RULE),
+                    "name the slicer's %s blocker, or null for the length ceiling" % SKIM_RULE)
+            elif trigger == "decision" and f.get("rule") == SKIM_RULE:
+                bad(field + ".trigger", "finding %s is %s, which pause asks as a skim question" % (show(finding), SKIM_RULE),
+                    "use trigger skim and id pass-%d.skim" % pass_no)
+        want = question_id(pass_no, trigger, finding)
+        if q["id"] != want:
+            bad(field + ".id", "id is %s, but its pass, trigger and finding make it %s" % (show(q["id"]), show(want)), "use the id pause printed")
+        elif want in seen:
+            bad(field + ".id", "id %s is already used by question %d" % (show(want), seen[want]), "record each question once, with its answer")
+        else:
+            seen[want] = i
+        if not is_text(q["question"]):
+            bad(field + ".question", "question is %s" % show(q["question"]), "copy the question pause printed")
+        options = q["options"]
+        keys = None
+        if not (isinstance(options, list) and all(isinstance(o, dict) and sorted(o) == ["key", "text"] and is_text(o["text"]) for o in options)):
+            bad(field + ".options", "options is %s, not a list of {key, text}" % show(options), "copy the options pause printed")
+        else:
+            keys = tuple(o["key"] for o in options)
+            if keys not in OPTION_KEYS[trigger]:
+                bad(field + ".options", "a %s question's option keys are %s, not %s" % (
+                    trigger, ", ".join(map(str, keys)), " or ".join(", ".join(k) for k in OPTION_KEYS[trigger])),
+                    "copy the options pause printed")
+                keys = None
+        answer = q["answer"]
+        if answer is None:
+            continue
+        if not isinstance(answer, dict):
+            bad(field + ".answer", "answer is %s, not null or an object" % show(answer), "use null until the user replies")
+            continue
+        missing = [f for f in ANSWER_FIELDS if f not in answer]
+        extra = sorted(f for f in answer if f not in ANSWER_FIELDS)
+        if missing or extra:
+            bad(field + ".answer", "answer has %s" % ("no " + ", ".join(missing) if missing else "unknown " + ", ".join(extra)),
+                "record exactly choice, words and answered_on, from the user's own reply")
+            continue
+        if keys is not None and answer["choice"] not in keys:
+            bad(field + ".answer.choice", "choice is %s, not one of %s" % (show(answer["choice"]), ", ".join(keys)),
+                "record the key of the option the user picked")
+        if not is_text(answer["words"]):
+            bad(field + ".answer.words", "words is %s" % show(answer["words"]), "record the user's reply, word for word")
+        if not is_date(answer["answered_on"]):
+            bad(field + ".answer.answered_on", "answered_on is %s, not a YYYY-MM-DD date" % show(answer["answered_on"]),
+                "give the date the user replied, such as \"2026-11-27\"")
+    return out
+
+
 def load(path):
     """(data, text, lines, exit code): data is None when the file can't be used."""
     try:
@@ -331,6 +482,10 @@ def check_file(path):
         last = passes[-1]["findings"]
         signed += ", %d pass%s: %d finding%s: %s" % (len(passes), "" if len(passes) == 1 else "es", len(last),
                                                    "" if len(last) == 1 else "s", FINDINGS.tally_of(last))
+    questions = data.get("questions")
+    if questions:
+        answered = sum(1 for q in questions if q["answer"] is not None)
+        signed += ", %d question%s (%d answered)" % (len(questions), "" if len(questions) == 1 else "s", answered)
     lines.append("%s: ok, %s, %s" % (path, tier, signed))
     return 0, lines, data
 

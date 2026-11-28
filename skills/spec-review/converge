@@ -48,13 +48,26 @@ still strictly fell (otherwise it stops with no-progress). The bloat checks
 and the section comparison need --previous, so they run from pass 2 on;
 growth is (words - previous words) / previous words.
 
+Answered decisions (v0.6, pauses.md): the record's `questions` hold the
+user's answers. A decision blocker whose question was answered with a choice
+that resolves it (a lettered option, `other`, or `keep` for the slicer) no longer
+stops the loop: it is handed to the author with the fix blockers, and a pass
+follows to apply it. It still counts as open in the pass it was raised in,
+so the next pass must have strictly fewer. The slicer's slicer.oversized
+blocker, once the user answered `keep`, is not open again in later passes:
+the user already chose. Any other decision raised again is open again, and
+asked again, since it may be a new question. Answers add no passes; pass 3 is still the last. With no
+`questions`, the verdict is exactly v0.5's.
+
 Prints, in the gate's format, one line per problem behind a stop:
   <file>:<line>: error [loop.<reason>] <section>: <problem>. Fix: <what to do>.
-one note per blocker caught late:
+one note per blocker caught late, and one per answered decision:
   <file>:<line>: note [loop.late] <section>: <problem>. Fix: <what to do>.
+  <file>:<line>: note [loop.answered] <section>: <problem>. Fix: <what to do>.
 then a status line and the verdict:
   <file>: pass 2 of 3: 1 open blocker (1 fix, 0 decision), was 3, 1 new (0 in changed sections); 640 words, was 612 (+4.6%); gates ok
   <file>: continue to pass 3: hand 1 fix blocker to the author
+  <file>: continue to pass 2: hand 1 fix blocker and 1 answer to the author
   <file>: converged at pass 2
   <file>: stop at pass 2: oscillation
 
@@ -101,6 +114,7 @@ RULE_TEXT = {
     "loop.gate": "stop: a hard gate fails on the spec (run gate for its lines)",
     "loop.oscillation": "stop: the pass has a blocker (rule and section) the pass before didn't, in a section the revision changed",
     "loop.late": "note: a new blocker in a section the revision didn't change was caught late; not oscillation",
+    "loop.answered": "note: a decision blocker the user answered (record questions, v0.6) goes to the author; a slicer.oversized blocker kept in an earlier pass isn't open again",
     "loop.no-progress": "stop: the open-blocker count didn't strictly decrease",
     "loop.decision": "stop: an open blocker is kind decision, a question for the user",
     "loop.cap": "stop: pass %d still has open blockers" % MAX_PASSES,
@@ -148,6 +162,38 @@ def new_blockers(current, previous):
     return out
 
 
+def resolutions(data):
+    """(answered, carried), each keyed by (pass number, finding id).
+
+    answered: the decision blockers whose question in that pass has an
+    answer that resolves them (RECORD.RESOLVING), mapped to the question.
+    carried: the slicer's slicer.oversized blockers in a pass after the user
+    answered `keep` to it, mapped to that question; they aren't open. Only a
+    kept skim answer carries: any other decision raised again may be a new
+    question under the same rule and section, so it is open and asked again.
+    """
+    answered = {}
+    for q in data.get("questions") or []:
+        if q["trigger"] in ("decision", "skim") and q["finding"] and q["answer"] and q["answer"]["choice"] in RECORD.RESOLVING:
+            answered[(q["pass"], q["finding"])] = q
+    carried, earlier = {}, {}
+    for p, entry in enumerate(data["passes"], 1):
+        decisions = [f for f in blockers_of(entry) if f["kind"] == "decision"]
+        for f in decisions:
+            if blocker_key(f) in earlier and (p, f["id"]) not in answered:
+                carried[(p, f["id"])] = earlier[blocker_key(f)]
+        for f in decisions:
+            q = answered.get((p, f["id"]))
+            if q and q["trigger"] == "skim" and blocker_key(f) not in earlier:
+                earlier[blocker_key(f)] = q
+    return answered, carried
+
+
+def open_of(entry, pass_no, carried):
+    """The pass's blockers, less the decisions an earlier answer already resolved."""
+    return [f for f in blockers_of(entry) if (pass_no, f["id"]) not in carried]
+
+
 def sections_of(text):
     """{heading: text} for each `## ` section of a spec, outside code; headings ignore case and spacing."""
     doc = GATE.Doc(text)
@@ -186,6 +232,12 @@ def growth_text(words, prev_words):
 
 def decide(spec, repo_opt=None, record_path=None, previous=None):
     """(exit code, output lines) for one spec. Raises InputError for exit 2."""
+    code, lines, _ = assess(spec, repo_opt, record_path, previous)
+    return code, lines
+
+
+def assess(spec, repo_opt=None, record_path=None, previous=None):
+    """(exit code, output lines, state) for one spec; state is what `pause` builds on. Raises InputError for exit 2."""
     text = read_spec(spec, "spec")
     repo = os.path.abspath(repo_opt) if repo_opt else GATE.find_repo(spec)
     try:
@@ -233,15 +285,19 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
         raise InputError(["%s:1: error [loop.record] file: %s. Fix: Give the spec this pass reviewed and the copy saved before its revision, "
                           "or correct the record." % (spec, m) for m in mismatch])
 
-    current = blockers_of(last)
+    answered, carried = resolutions(data)
+    current = open_of(last, n, carried)
     open_n = len(current)
     decisions = [f for f in current if f["kind"] == "decision"]
+    answered_now = [f for f in decisions if (n, f["id"]) in answered]
+    unanswered = [f for f in decisions if (n, f["id"]) not in answered]
     fixes = open_n - len(decisions)
-    new = new_blockers(current, blockers_of(before)) if before is not None else []
+    before_open = open_of(before, n - 1, carried) if before is not None else None
+    new = new_blockers(current, before_open) if before is not None else []
     caused = [f for f in new if FINDINGS._norm(f["location"]["section"]) in changed or
               FINDINGS._norm(f["location"]["section"]) not in sections_of(text)]
     late = [f for f in new if f not in caused]
-    was = len(blockers_of(before)) if before is not None else None
+    was = len(before_open) if before is not None else None
 
     status = "%s: pass %d of %d: %s (%d fix, %d decision)" % (spec, n, MAX_PASSES, plural(open_n, "open blocker"), fixes, len(decisions))
     if was is not None:
@@ -281,9 +337,9 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
                 "stop and ask the user; more passes won't fix missing context")
     elif open_n == 0:
         reason = None
-    elif decisions:
+    elif unanswered:
         reason = "decision"
-        for f in decisions:
+        for f in unanswered:
             problem(f["location"]["line"] or 1, reason, f["location"]["section"],
                     "blocker %s (%s) is a decision for the user" % (f["rule"], f["id"]),
                     "ask the user, with the options; the author never answers a decision")
@@ -295,12 +351,31 @@ def decide(spec, repo_opt=None, record_path=None, previous=None):
     notes = ["%s:%d: note [loop.late] %s: blocker %s (%s, %s) is new in pass %d, in a section the revision didn't change. "
              "Fix: Treat it as caught late, not caused by the revision; it is handed back like any other blocker." % (
                  spec, f["location"]["line"] or 1, f["location"]["section"], f["rule"], f["id"], f["kind"], n) for f in late]
+    for f in answered_now:
+        q = answered[(n, f["id"])]
+        notes.append("%s:%d: note [loop.answered] %s: decision blocker %s (%s) is answered (%s: %s). "
+                     "Fix: Hand the answer to the author with the fix blockers; the reviewers never see it." % (
+                         spec, f["location"]["line"] or 1, f["location"]["section"], f["rule"], f["id"], q["id"], q["answer"]["choice"]))
+    for f in blockers_of(last):
+        q = carried.get((n, f["id"]))
+        if q:
+            notes.append("%s:%d: note [loop.answered] %s: decision blocker %s (%s) was answered in pass %d (%s: %s), so it isn't open again. "
+                         "Fix: Check the revision applied that answer; don't ask it again." % (
+                             spec, f["location"]["line"] or 1, f["location"]["section"], f["rule"], f["id"], q["pass"], q["id"],
+                             q["answer"]["choice"]))
     lines = problems + notes + [status]
+    state = {"spec": spec, "pass": n, "reason": reason, "open": current, "unanswered": unanswered, "answered_now": answered_now,
+             "fixes": fixes, "data": data, "config": config, "text": text, "words": words, "prev_words": prev_words,
+             "gates_ok": gates_ok, "gate_lines": gate_lines, "carried": carried, "answered": answered, "record": rec}
     if reason:
-        return 1, lines + ["%s: stop at pass %d: %s" % (spec, n, reason)]
+        state["verdict"] = "stop"
+        return 1, lines + ["%s: stop at pass %d: %s" % (spec, n, reason)], state
     if open_n == 0:
-        return 0, lines + ["%s: converged at pass %d" % (spec, n)]
-    return 3, lines + ["%s: continue to pass %d: hand %s to the author" % (spec, n + 1, plural(fixes, "fix blocker"))]
+        state["verdict"] = "converged"
+        return 0, lines + ["%s: converged at pass %d" % (spec, n)], state
+    state["verdict"] = "continue"
+    hand = plural(fixes, "fix blocker") + (" and " + plural(len(answered_now), "answer") if answered_now else "")
+    return 3, lines + ["%s: continue to pass %d: hand %s to the author" % (spec, n + 1, hand)], state
 
 
 def parse_args(argv):

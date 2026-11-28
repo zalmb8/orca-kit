@@ -11,7 +11,7 @@ A Claude Code plugin of personal skills and agents for driving AI software devel
 - `templates/skill/` — copy this to start a new skill.
 - `docs/<skill>/` — design and implementation plan for each skill (e.g. `docs/spec/ROADMAP.md`).
 - `skills/spec/check` and `skills/spec/tests/` — the spec checker and its tests: `python3 -m unittest discover -s skills/spec/tests`.
-- `skills/spec-review/gate`, `skills/spec-review/findings`, `skills/spec-review/record`, `skills/spec-review/converge` and `skills/spec-review/tests/` — the hard gates, risk tiering (`gate --risk`) and the slicer's counts (`gate --counts`), the findings validator and merge (`findings --merge`), the review-record validator, the revision loop's verdict (`converge`, described in `loop.md`), and their tests: `python3 -m unittest discover -s skills/spec-review/tests`.
+- `skills/spec-review/gate`, `skills/spec-review/findings`, `skills/spec-review/record`, `skills/spec-review/converge`, `skills/spec-review/pause`, `skills/spec-review/summary` and `skills/spec-review/tests/` — the hard gates, risk tiering (`gate --risk`) and the slicer's counts (`gate --counts`), the findings validator and merge (`findings --merge`), the review-record validator, the revision loop's verdict (`converge`, described in `loop.md`), the human-in-the-loop pauses and the review summary (`pause` and `summary`, described in `pauses.md`), and their tests: `python3 -m unittest discover -s skills/spec-review/tests`.
 - `agents/spec-review-*.md` and `skills/spec-review/examples/` — the five advisory reviewer agents (`orca-kit:spec-review-<reviewer>`) and the seeded example specs they are checked against (`examples/expected.json`).
 
 ## Conventions
