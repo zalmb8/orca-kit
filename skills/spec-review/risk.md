@@ -1,6 +1,6 @@
 # Risk tiering and the review record
 
-Reference for `gate --risk` and `record` (v0.3; the record's `passes` are v0.4, their `words` and `gates` v0.5). SKILL.md says when to run them; this file has the classifier's defaults, its settings, the review record's format, and how a sign-off is recorded.
+Reference for `gate --risk` and `record` (v0.3; the record's `passes` are v0.4, their `words` and `gates` v0.5, its `questions` v0.6). SKILL.md says when to run them; this file has the classifier's defaults, its settings, the review record's format, and how a sign-off is recorded.
 
 ## Tiers
 
@@ -71,8 +71,9 @@ A risk that isn't in the list above, a term that isn't lowercase words (with opt
 | `risk.reasons` | Its `risk.*` warning lines, each without the `Fix:` part; non-empty for a high tier. |
 | `sign_off` | `null` until the user signs off. Then `signed_off_by` (the name the user gave), `signed_off_on` (the date they said yes, `YYYY-MM-DD`) and `risks` (exactly the risks shown to them). |
 | `passes` | Optional (v0.4). One entry per review pass, at most 3: `{"findings": [...], "open_blockers": <n>}`, the array `findings --merge` printed and its blocker count, plus optional `words` and `gates` (v0.5, `loop.md`). `reviewers.md` has the rules. |
+| `questions` | Optional (v0.6), and needs `passes`. One entry per question `pause` printed and the skill asked: its id, pass, trigger, finding, question and options, and the user's `answer` (`null` until they reply). `pauses.md` has the format and the rules. |
 
-`spec`, `risk` and `sign_off` are required, `sign_off` may be `null`, `passes` may be left out (so every v0.3 record stays valid), and unknown fields are rejected. Later releases add their own fields (gate results, the questions asked and answered) to this format and to `record`.
+`spec`, `risk` and `sign_off` are required, `sign_off` may be `null`, `passes` and `questions` may be left out (so every v0.3 and v0.5 record stays valid), and unknown fields are rejected. The sign-off is asked as a pause too (`pauses.md`), but it is recorded here in `sign_off`, never in `questions`.
 
 ## Sign-off
 

@@ -1,15 +1,15 @@
 # The revision loop
 
-Reference for the bounded revision loop (v0.5). SKILL.md says when it runs. This file covers who does what in each pass, the hand-off to the author, the verdict `converge` prints, the same-blocker rule, the bloat guard and what the record holds for each pass.
+Reference for the bounded revision loop (v0.5; answered decisions v0.6, in `pauses.md`). SKILL.md says when it runs. This file covers who does what in each pass, the hand-off to the author, the verdict `converge` prints, the same-blocker rule, the bloat guard and what the record holds for each pass.
 
 ## Who does what
 
 | Role | Who | Sees |
 |---|---|---|
-| **Author** | The session that drafted the spec, which is normally the one running the review, revising through `orca-kit:spec` refine | Only the `kind: fix` blockers of the last pass, as findings |
+| **Author** | The session that drafted the spec, which is normally the one running the review, revising through `orca-kit:spec` refine | Only the `kind: fix` blockers of the last pass, as findings, and the decisions the user answered, with their answers |
 | **Reviewers** | The five reviewer agents, launched fresh for every pass exactly as in [Running a review](SKILL.md#running-a-review) | `Spec:`, `Repo root:` and, for the slicer, `Counts:`. Never the author's reasoning, the earlier passes or the blockers handed back |
 | **Gates and verdict** | `gate`, `gate --risk` and `converge`, which are deterministic scripts | The files |
-| **User** | Anyone the loop stops for | The stop reason and every open blocker |
+| **User** | Anyone the loop stops for | The questions `pause` prints: the stop reason, the evidence and the options |
 
 If the review runs in a session that didn't draft the spec, that session is the author for the loop: it revises through refine the same way, and it still gets nothing from the reviewers but their findings.
 
@@ -17,7 +17,7 @@ If the review runs in a session that didn't draft the spec, that session is the 
 
 Pass 1 is the review in SKILL.md, steps 1–6. Its record entry also holds `words` (from `gate --counts`) and `gates` (`passed` when `gate` exited 0, `failed` when it exited 1). Then, for every pass:
 
-1. **Verdict.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge specs/<slug>.md` on pass 1. From pass 2 on, add `--previous $TMPDIR/spec-review/<slug>/pass-<n-1>/<slug>.md`, the copy saved in step 2 of the pass before. It prints the problem lines, a status line and one verdict (below). Show the user the status line every pass.
+1. **Verdict.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge specs/<slug>.md` on pass 1. From pass 2 on, add `--previous $TMPDIR/spec-review/<slug>/pass-<n-1>/<slug>.md`, the copy saved in step 2 of the pass before. It prints the problem lines, a status line and one verdict (below). Show the user the status line every pass. Then run `pause` with the same arguments (`pauses.md`). If it asks questions, ask them, record the answers and run step 1 again on the same pass.
 2. **On `continue`, save and hand back.** Copy the spec as it is now to `$TMPDIR/spec-review/<slug>/pass-<n>/<slug>.md`, outside the repo and under the spec's own name. Then hand the pass's `kind: fix` blockers to the author (see [The hand-off](#the-hand-off)).
 3. **Revise.** The author revises the spec through `orca-kit:spec` refine.
 4. **Re-review.** Run SKILL.md's review steps 1–6 again on the revised spec: the gates, the counts, the five reviewers in **fresh** contexts, the merge and `gate --risk`. Then **append** a pass to `passes` with its `findings`, `open_blockers`, `words` and `gates`, and set `risk` to what `gate --risk` just reported. Run `record` on the file. The hard gates re-run after every revision because step 4 always runs them.
@@ -27,10 +27,10 @@ The loop never runs a fourth pass: `record` rejects a fourth entry, and `converg
 
 ## The hand-off
 
-The author gets a list of the last pass's blockers with `kind: fix`. For each one it gets the `rule`, `location`, `evidence`, `concrete_question` and `suggested_fix`, exactly as the merged findings hold them. It gets nothing else:
+The author gets a list of the last pass's blockers with `kind: fix`. For each one it gets the `rule`, `location`, `evidence`, `concrete_question` and `suggested_fix`, exactly as the merged findings hold them. It also gets each `decision` blocker the user answered in this pass (v0.6): the finding as above, the question, the option the user picked and their words. The user's choice is the answer, and the author applies it, never a different one. It gets nothing else:
 
 - no nits, which stay comments and are shown to the user in the report;
-- no `decision` blockers, which the loop never hands back (the verdict stops on them);
+- no unanswered `decision` blockers, which the loop never hands back (the verdict stops on them, and `pause` asks the user);
 - no reviewer conversation, because a reviewer returns nothing but its findings.
 
 Refine has no step that takes findings as input, and `orca-kit:spec` isn't changed for the loop. The blockers reach refine as the conversation it already reads, with these limits stated alongside them:
@@ -52,13 +52,15 @@ Refine has no step that takes findings as input, and `orca-kit:spec` isn't chang
 | stop: `oscillation` | The pass has a new blocker (see [The same blocker](#the-same-blocker)) in a section the revision changed, even if the count fell | 1 | Reports the new blockers and the ones still open |
 | stop: `no-progress` | The open-blocker count didn't strictly decrease | 1 | Reports the open blockers |
 | converged | The pass has no open blockers and the gates pass | 0 | Reports the review as usual, with nits as comments |
-| stop: `decision` | An open blocker is `kind: decision` | 1 | Lists every decision blocker as a question for the user, with the options, and never picks one |
+| stop: `decision` | An open blocker is `kind: decision` and the user hasn't answered it with a choice that resolves it (`pauses.md`) | 1 | `pause` asks each one as a question, with the options; the skill never picks one |
 | stop: `cap` | Pass 3 still has open blockers | 1 | Reports the open blockers |
-| continue | Only `fix` blockers are open, and there is a pass left | 3 | Hands them back (step 2 above) |
+| continue | Only `fix` blockers and answered decisions are open, and there is a pass left | 3 | Hands them back, with the answers (step 2 above) |
 
 Exit 2 is an input problem, not a verdict: a usage error, an unreadable spec, invalid settings, an invalid record or one with no `passes`, pass 2 or 3 without `--previous` (or pass 1 with it), or a record whose last pass's `words` or `gates` (or the previous pass's `words`) don't match the specs given. Fix the input and run it again.
 
-Every stop is non-convergence, and the skill stops there. It reports the reason, `converge`'s problem lines, the open-blocker count of every pass and each open blocker, then leaves the next step to the user. It doesn't run another pass, and it doesn't revise the spec any further. v0.6 turns these stops into formal questions with options. Until then the skill says why the loop stopped and what is open, and nothing more.
+Every stop except `decision` is non-convergence, and the loop stops there. It doesn't run another pass, and it doesn't revise the spec any further. `pause` turns the stop into a question with options (`pauses.md`): how to finish, whether to split, or, for a `decision`, the user's answer, after which the loop can resume.
+
+An answered decision (v0.6) still counts as open in the pass it was raised in, so the next pass must have strictly fewer open blockers. Once the user answers `keep` to the skim question, the slicer's `slicer.oversized` blocker isn't open again in later passes; any other decision raised again is open, and asked again (`pauses.md`). Answers add no passes: the cap stays at 3. With no `questions` in the record, the verdicts are exactly as above.
 
 ## The same blocker
 

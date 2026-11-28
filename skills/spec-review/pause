@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""Decide whether the orca-kit:spec-review review pauses for the user, and print the questions.
+
+Usage:
+  pause [--repo ROOT] [--record FILE] [--previous PREV.md] <spec.md>
+  pause --rules
+
+  --repo, --record, --previous   As for converge, which this script runs
+                  first: the same record and specs give the same verdict.
+  --rules         List the triggers in the order they are checked, and exit.
+
+The human-in-the-loop pauses (docs/spec-review/ROADMAP.md, v0.6, and
+pauses.md next to this script). After every pass, this script runs
+converge, reads the record's questions and answers, computes the risk tier
+from the spec and the last pass's findings, and prints the questions due
+now, as the user should see them. One stage is asked at a time, the first
+that applies:
+
+  1. loop       a bloat stop (bloat-ceiling, bloat-growth): the revision is
+                rejected; ask how to finish
+  2. skim       the spec is over its length ceiling (pass 1), or the slicer's
+                slicer.oversized blocker is open: ask whether to split it
+  3. (gate)     any other hard-gate stop: no question, the review ends; the
+                gates are fixed through orca-kit:spec refine
+  4. loop       a cap, oscillation or no-progress stop: ask how to finish
+  5. decision   each open decision blocker nobody has answered yet
+  6. sign-off   a high-risk spec without a current sign-off, once the loop
+                is done (converged, or finished with blockers open)
+
+A question is due when the record has no answer for its id yet. An answer
+that ends the review (split, trim, refine, or a decision left open) skips
+the stages after it, except that a review finished with blockers open
+(finish, open) still asks for the sign-off, unless the revision was
+rejected by a bloat stop. Run pause on the spec the last pass reviewed:
+after a bloat stop, put back the saved copy only once pause says to render
+the summary. On `continue` nothing is asked:
+the loop goes on. Every question is one choice between fixed options; this
+script never picks one, never prints a default, and never writes the record.
+
+Prints converge's status and verdict lines, then either
+  <file>: pause: ask <n> question(s) (<trigger>)[; then, if the review goes on: <triggers>]
+followed by each question, and finally
+  <file>: pause at pass <n>: ask the question and record the answer
+  <file>: pause at pass <n>: ask the <n> questions one at a time, and record each answer
+or one line saying what comes next:
+  <file>: no pause: continue to pass <n+1>
+  <file>: no pause: done at pass <n>; render the summary
+  <file>: no pause: ended at pass <n> (<why>); render the summary
+
+Exit codes: 0 nothing to ask, 1 the review pauses for the user, 2 an input
+error (converge's, or a findings set that can't be classified).
+
+Python 3 standard library only; no install step.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_sibling(name):
+    loader = importlib.machinery.SourceFileLoader("spec_review_" + name, os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+CONVERGE = load_sibling("converge")
+GATE = CONVERGE.GATE
+RECORD = CONVERGE.RECORD
+
+TRIGGERS = ("loop", "skim", "decision", "sign-off")
+BLOAT = ("bloat-ceiling", "bloat-growth")
+LOOP_STOPS = ("oscillation", "no-progress", "cap")
+ENDING = {"split": "split", "trim": "trim", "refine": "refine"}
+FINISHING = ("finish", "open")
+
+RULE_TEXT = {
+    "pause.loop": "a bloat stop, or a cap, oscillation or no-progress stop: how to finish the review (finish | refine)",
+    "pause.skim": "over the length ceiling, or slicer.oversized open: split the spec (split | keep, or split | trim over the ceiling)",
+    "pause.gate": "any other hard-gate stop: no question; the review ends and the gates are fixed through refine",
+    "pause.decision": "each open, unanswered decision blocker: the user's choice (the reviewer's lettered options a, b, ..., then other | open)",
+    "pause.sign-off": "a high-risk spec without a current sign-off, once the loop is done: yes and a name, or no (recorded as sign_off)",
+}
+
+USAGE = ("usage: pause [--repo ROOT] [--record FILE] [--previous PREV.md] <spec.md>\n"
+         "       pause --rules")
+
+def plural(n, word, many=None):
+    return CONVERGE.plural(n, word, many)
+
+
+def where(f):
+    loc = f["location"]
+    out = loc["section"]
+    if loc["line"]:
+        out += ", line %d" % loc["line"]
+    if loc["ref"]:
+        out += " (%s)" % loc["ref"]
+    return out
+
+
+def quoted(text):
+    return ["   > " + line for line in text.strip().split("\n")]
+
+
+MARKER_RE = re.compile(r"\(([a-e])\)\s+")
+SENTENCE_END_RE = re.compile(r"\.\s+(?=[A-Z`])")
+
+
+def alternatives(fix):
+    """(the lettered alternatives of a decision's suggested_fix, the text after the last one).
+
+    A reviewer writes a decision's options as `(a) ...; or (b) ...`. They are
+    used only when they run (a), (b), ... in order, at least two of them; the
+    last one ends at its first sentence end, and what follows applies to all.
+    Otherwise ([], None).
+    """
+    marks = list(MARKER_RE.finditer(fix))
+    if len(marks) < 2 or [m.group(1) for m in marks] != list("abcde"[:len(marks)]):
+        return [], None
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(fix)
+        out.append(fix[m.end():end])
+    last, tail = out[-1], None
+    stop = SENTENCE_END_RE.search(last)
+    if stop:
+        last, tail = last[:stop.start()], last[stop.end():].strip() or None
+    out[-1] = last
+    clean = []
+    for text in out:
+        text = re.sub(r"(?:[;,]?\s*\bor)?[\s;,.]*$", "", text.strip())
+        clean.append(text[0].upper() + text[1:] + ".")
+    return clean, tail
+
+
+def options_of(trigger, words=None, ceiling=None, over=False):
+    """[(key, text)] for a trigger, in the order shown; keys from RECORD.OPTION_KEYS.
+
+    For a decision, `words` is the finding's suggested_fix: its lettered
+    alternatives become options a, b, ...; the user's own answer and leaving
+    it open always follow.
+    """
+    if trigger == "decision":
+        alts, _ = alternatives(words or "")
+        own = ("Give your own answer: say in your own words what the spec should say." if alts else
+               "Answer it: reply with what the spec should say, in your own words (the reviewer's options are above).")
+        return [("abcde"[i], text) for i, text in enumerate(alts)] + [
+            ("other", own),
+            ("open", "Leave it open: stop the review here, with this blocker listed as open in the summary.")]
+    if trigger == "skim":
+        split = ("split", "Split it: stop this review, split the spec with orca-kit:spec into smaller specs "
+                          "(along the proposed slices or your own), and review each one on its own.")
+        if over:
+            return [split, ("trim", "Trim it: stop this review, cut it under %d words with orca-kit:spec refine "
+                                    "(shorter prose, no ACs dropped), then run a fresh review." % ceiling)]
+        return [split, ("keep", "Keep it as one spec: the review goes on, and the slicer's blocker counts as answered.")]
+    return [("finish", "Finish with them open: go to the review summary, which lists every open blocker. "
+                       "The spec isn't ready to build until they're fixed."),
+            ("refine", "Work through them with me: stop this review, fix them together in orca-kit:spec refine, "
+                       "then run a fresh review.")]
+
+
+def reply_line(options, other=False):
+    nums = [str(i) for i in range(1, len(options) + 1)]
+    text = "Reply with %s or %s." % (", ".join(nums[:-1]), nums[-1])
+    if other:
+        text = text[:-1] + ", and for %d add your answer." % (1 + [k for k, _ in options].index("other"))
+    return text
+
+
+def block(index, total, qid, title, body, question, options, reply):
+    lines = ["", "Question %d of %d [%s]: %s" % (index, total, qid, title), ""]
+    lines += body
+    lines += ["", "   %s" % question, ""]
+    for i, (_, text) in enumerate(options, 1):
+        lines.append("   %d. %s" % (i, text))
+    lines += ["", "   " + reply]
+    return lines
+
+
+def decision_block(index, total, n, f):
+    qid = RECORD.question_id(n, "decision", f["id"])
+    body = ["   The %s reviewer raised a decision only you can make (%s), in %s:" % (f["reviewer"], f["rule"], where(f))]
+    body += quoted(f["evidence"])
+    alts, tail = alternatives(f["suggested_fix"])
+    if not alts:
+        body += ["", "   The reviewer's options: %s" % f["suggested_fix"]]
+    elif tail:
+        body += ["", "   Whichever you choose: %s" % tail]
+    options = options_of("decision", f["suggested_fix"])
+    return qid, block(index, total, qid, "a decision for you", body, f["concrete_question"], options, reply_line(options, other=True))
+
+
+def skim_block(index, total, n, slicer, words, ceiling, over):
+    qid = RECORD.question_id(n, "skim", None)
+    body = []
+    if over:
+        body.append("   The spec is %d words, over this repo's length ceiling of %d (max_words), so it fails the skim test: "
+                    "it is too long to review reliably in one go." % (words, ceiling))
+    if slicer is not None:
+        body.append("   The slicer reviewer says it is too large to build and review in one go (%s), in %s:" % (slicer["rule"], where(slicer)))
+        body += quoted(slicer["evidence"])
+        body += ["", "   Its proposed slices: %s" % slicer["suggested_fix"]]
+    question = slicer["concrete_question"] if slicer is not None and not over else (
+        "How do you want to bring the spec under %d words?" % ceiling if over else "")
+    options = options_of("skim", ceiling=ceiling, over=over)
+    return qid, block(index, total, qid, "the spec fails the skim test", body, question, options, reply_line(options))
+
+
+LOOP_TEXT = {
+    "bloat-ceiling": "The last revision put the spec at %(words)d words, over the length ceiling of %(ceiling)d. "
+                     "The revision is rejected: put back the copy saved before it (%(previous)s).",
+    "bloat-growth": "The last revision grew the spec from %(prev)d to %(words)d words, more than max_growth %(growth)s allows in one pass. "
+                    "The revision is rejected: put back the copy saved before it (%(previous)s).",
+    "oscillation": "Pass %(n)d has a new blocker in a section the last revision changed, so another pass would trade one problem for another.",
+    "no-progress": "Pass %(n)d has %(open)s, not fewer than pass %(m)d, so another pass won't converge.",
+    "cap": "The loop has used all %(max)d passes, and pass %(n)d still has %(open)s.",
+}
+
+
+def loop_block(index, total, st, previous, history):
+    n, reason = st["pass"], st["reason"]
+    qid = RECORD.question_id(n, "loop", None)
+    facts = {"n": n, "m": n - 1, "words": st["words"], "prev": st["prev_words"] or 0, "ceiling": st["config"]["max_words"],
+             "growth": "%g" % st["config"]["max_growth"], "previous": previous, "max": CONVERGE.MAX_PASSES,
+             "open": plural(len(st["open"]), "open blocker")}
+    body = ["   " + LOOP_TEXT[reason] % facts]
+    shown = st["open"]
+    if shown:
+        body += ["", "   Open blockers:" if reason not in BLOAT else "   Open blockers in the rejected revision:"]
+        for f in shown:
+            body.append("   - %s, %s: %s" % (f["rule"], where(f), f["concrete_question"]))
+    body += ["", "   Open blockers by pass: %s." % history]
+    options = options_of("loop")
+    return qid, block(index, total, qid, "the revision loop stopped (%s)" % reason, body,
+                      "How do you want to finish this review?", options, reply_line(options))
+
+
+def sign_off_block(index, total, rec, reasons, risks, so):
+    shown = ", ".join(risks)
+    body = ["   gate --risk puts this spec in the high-risk tier for: %s. The reasons:" % shown]
+    for r in reasons:
+        body.append("   - %s: %s, line %d: %s." % (r.risk, r.section, r.line, r.message))
+    if so is not None:
+        body += ["", "   The sign-off by %s on %s covers %s; an old sign-off never carries over to a different set of risks." % (
+            so["signed_off_by"], so["signed_off_on"], ", ".join(so["risks"]))]
+    body += ["", "   A high-risk spec can't pass review without your own sign-off, recorded in %s." % rec]
+    options = [("yes", "Yes: I sign off on exactly these risks (%s). Give the name to record it under." % shown),
+               ("no", "No: the spec doesn't pass review until these risks leave the spec or you sign off.")]
+    return "sign-off", block(index, total, "sign-off", "this spec is high risk", body,
+                             "Do you sign off on exactly these risks: %s?" % shown, options, "Reply with 1 and your name, or 2.")
+
+
+def answer_of(questions, qid):
+    q = questions.get(qid)
+    return q["answer"]["choice"] if q is not None and q["answer"] is not None else None
+
+
+def plan(st, spec, previous):
+    """(exit code, header lines, [(trigger, qid, block lines)], final line)."""
+    n, reason, verdict, data = st["pass"], st["reason"], st["verdict"], st["data"]
+    questions = dict((q["id"], q) for q in data.get("questions") or [])
+    config = st["config"]
+    words, ceiling = st["words"], config["max_words"]
+    over = n == 1 and words > ceiling
+    slicer = next((f for f in st["open"] if f["rule"] == RECORD.SKIM_RULE and f["kind"] == "decision"), None)
+    if slicer is not None and (n, slicer["id"]) in st["answered"]:
+        slicer = None  # answered `keep`: no longer a skim failure
+
+    last = data["passes"][-1]["findings"]
+    reasons, risks = GATE.risks_of(GATE.Doc(st["text"]), config, last)
+    so = data["sign_off"]
+    needs_sign_off = bool(risks) and (so is None or sorted(so["risks"], key=GATE.RISKS.index) != risks)
+    rec = st["record"]
+
+    counts = []
+    for p, entry in enumerate(data["passes"], 1):
+        counts.append(str(len(CONVERGE.open_of(entry, p, st["carried"]))))
+    history = ", ".join(counts)
+
+    def ended(why):
+        return 0, [], "%s: no pause: ended at pass %d (%s); render the summary" % (spec, n, why)
+
+    def finish(why=None):
+        if needs_sign_off:
+            qid, lines = sign_off_block(1, 1, rec, reasons, risks, so)
+            return 1, [("sign-off", qid, lines)], None
+        if why:
+            return ended(why)
+        return 0, [], "%s: no pause: done at pass %d; render the summary" % (spec, n)
+
+    def loop_stage():
+        choice = answer_of(questions, RECORD.question_id(n, "loop", None))
+        if choice is None:
+            qid, lines = loop_block(1, 1, st, previous, history)
+            return 1, [("loop", qid, lines)], None
+        if choice == "finish" and reason in BLOAT:
+            # The revision is rejected: the spec to accept is the saved copy, not the one these risks were found in.
+            return ended("finished with blockers open; put back the saved copy")
+        if choice == "finish":
+            return finish("finished with blockers open")
+        return ended(ENDING[choice])
+
+    def staged():
+        if reason in BLOAT:
+            return loop_stage()
+        if over or slicer is not None:
+            choice = answer_of(questions, RECORD.question_id(n, "skim", None))
+            if choice is None:
+                qid, lines = skim_block(1, 1, n, slicer, words, ceiling, over)
+                return 1, [("skim", qid, lines)], None
+            if choice in ENDING:
+                return ended(ENDING[choice])
+        if reason == "gate":
+            return ended("gate: fix the failing gates through orca-kit:spec refine, then run a fresh review")
+        if reason in LOOP_STOPS:
+            return loop_stage()
+        if reason == "decision":
+            due = [f for f in st["unanswered"] if f["rule"] != RECORD.SKIM_RULE
+                   and answer_of(questions, RECORD.question_id(n, "decision", f["id"])) is None]
+            if due:
+                out = []
+                for i, f in enumerate(due, 1):
+                    qid, lines = decision_block(i, len(due), n, f)
+                    out.append(("decision", qid, lines))
+                return 1, out, None
+            # Every open decision is answered, and none resolves it: each was left open.
+            return finish("decision left open")
+        if verdict == "continue":
+            return 0, [], "%s: no pause: continue to pass %d" % (spec, n + 1)
+        return finish()
+
+    code, asked, final = staged()
+    header = []
+    if asked:
+        trigger = asked[0][0]
+        later = []
+        if trigger == "skim" and any(f["rule"] != RECORD.SKIM_RULE for f in st["unanswered"]):
+            later.append("decision")
+        if trigger != "sign-off" and needs_sign_off and reason not in BLOAT:
+            later.append("sign-off")
+        header.append("%s: pause: ask %s (%s)%s" % (spec, plural(len(asked), "question"), trigger,
+                                                    "; then, if the review goes on: " + ", ".join(later) if later else ""))
+        final = "%s: pause at pass %d: %s" % (spec, n, "ask the question and record the answer" if len(asked) == 1
+                                              else "ask the %d questions one at a time, and record each answer" % len(asked))
+    return code, header, asked, final
+
+
+def run(spec, repo_opt=None, record_path=None, previous=None):
+    """(exit code, output lines). Raises CONVERGE.InputError for exit 2."""
+    _, lines, st = CONVERGE.assess(spec, repo_opt, record_path, previous)
+    code, header, asked, final = plan(st, spec, previous)
+    out = lines[-2:] + header
+    for _, _, block_lines in asked:
+        out += block_lines
+    if asked:
+        out.append("")
+    out.append(final)
+    return code, out
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if any(a in ("-h", "--help") for a in argv):
+        sys.stdout.write(__doc__.lstrip())
+        return 0
+    if "--rules" in argv:
+        for rule_id, text in RULE_TEXT.items():
+            print("  %-16s %s" % (rule_id, text))
+        return 0
+    try:
+        opts = CONVERGE.parse_args(argv)
+    except CONVERGE.UsageError as e:
+        sys.stderr.write("pause: %s\n%s\n" % (e, USAGE))
+        return 2
+    try:
+        code, lines = run(opts["paths"][0], opts["repo"], opts["record"], opts["previous"])
+    except CONVERGE.InputError as e:
+        code, lines = 2, e.lines
+    for line in lines:
+        print(line)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,96 @@
+{
+  "spec": "archive-completed-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 57,
+            "ref": "AC-4"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-4",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "ambiguity.two-readings",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": 13,
+            "ref": null
+          },
+          "evidence": "moves every completed todo out of the store into an archive file",
+          "concrete_question": "Should `todo archive` delete completed todos after archiving them, or keep them in the archive file forever?",
+          "suggested_fix": "Choose: (a) keep them in `archive.json` forever; or (b) delete them from the archive after 30 days. Either way, say so in the Goal.",
+          "risk": null
+        },
+        {
+          "id": "slicer-1",
+          "reviewer": "slicer",
+          "severity": "nit",
+          "kind": "decision",
+          "rule": "slicer.independent-parts",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": null,
+            "ref": null
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 2
+    }
+  ],
+  "questions": [
+    {
+      "id": "pass-1.ambiguity-4",
+      "pass": 1,
+      "trigger": "decision",
+      "finding": "ambiguity-4",
+      "question": "Should `todo archive` delete completed todos after archiving them, or keep them in the archive file forever?",
+      "options": [
+        {
+          "key": "a",
+          "text": "Keep them in `archive.json` forever."
+        },
+        {
+          "key": "b",
+          "text": "Delete them from the archive after 30 days."
+        },
+        {
+          "key": "other",
+          "text": "Give your own answer: say in your own words what the spec should say."
+        },
+        {
+          "key": "open",
+          "text": "Leave it open: stop the review here, with this blocker listed as open in the summary."
+        }
+      ],
+      "answer": {
+        "choice": "open",
+        "words": "3",
+        "answered_on": "2026-11-27"
+      }
+    }
+  ]
+}

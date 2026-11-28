@@ -1,22 +1,29 @@
 ---
 name: spec-review
-description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling), tier its risk (auth, migrations, data models, billing, public or breaking API changes) and require a human sign-off for a high-risk spec, run the bounded revision loop that hands fix blockers back to the author until the spec converges or the loop stops, or validate a reviewer's findings JSON or a review record.
+description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling), tier its risk (auth, migrations, data models, billing, public or breaking API changes) and require a human sign-off for a high-risk spec, run the bounded revision loop that hands fix blockers back to the author until the spec converges or the loop stops, pause to ask the user one concrete choice at a time (a decision finding, a stopped loop, a high-risk sign-off, a spec that fails the skim test) and resume with their answers, render the review summary the user reads before accepting, or validate a reviewer's findings JSON or a review record.
 ---
 
 # spec-review
 
-Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates and the risk step have run, the user has every result with its lines, a high-risk spec has the user's own sign-off or is reported as not passing, and every finding the review uses has passed the findings validator.
+Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates and the risk step have run, the user has every result with its lines, every question the review raised has been asked and the user's answers are recorded, a high-risk spec has the user's own sign-off or is reported as not passing, every finding the review uses has passed the findings validator, and the user has the review summary.
 
-## Status (v0.5)
+## Status (v0.6)
 
-Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), the findings format with its validator (`findings`), the five advisory reviewers with their merge (`findings --merge`), and the bounded revision loop with its verdict script (`converge`). The steps below are planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
+Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), the findings format with its validator (`findings`), the five advisory reviewers with their merge (`findings --merge`), the bounded revision loop with its verdict script (`converge`), and the human-in-the-loop pauses (`pause`), resuming after answers, and the review summary (`summary`). The step below is planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
 
 | Step | Planned in |
 |---|---|
-| Human-in-the-loop pauses (decision findings, high risk, non-convergence, skim test) as formal questions, and the review summary | v0.6 |
 | Graduating repeated findings (`findings --stats`) | v0.7 |
 
-When the user asks to review a spec, run the [review](#running-a-review) below: the hard gates, the five reviewers, the merge, the review record and the risk step, in that order. Then run the [revision loop](#revision-loop). Say plainly that the formal pauses and the review summary aren't available yet, and don't imitate them. When the loop stops, report why and what is open, and leave the next step to the user. Never answer a `decision` finding yourself. A review never reports a spec as ready to build. It reports what the gates, the risk step, the reviewers and the loop found.
+When the user asks to review a spec, the whole review runs end to end:
+
+1. Run the [review](#running-a-review): the hard gates, the five reviewers, the merge, the review record and the risk step, in that order.
+2. After every pass, run `converge` and then `pause` ([Pauses](#pauses-and-the-summary)).
+3. When `pause` prints questions, ask them, record each answer, and run `converge` and `pause` again on the same pass.
+4. When the verdict is `continue`, run the next pass of the [revision loop](#revision-loop), handing the author the fix blockers and the user's answers.
+5. When `pause` says to render the summary, run `summary` and show it.
+
+Never answer a question yourself, and never say which option you would pick. A review never reports a spec as ready to build: it reports what the gates, the risk step, the reviewers, the loop and the user's answers came to. If the user asks about graduating rules, say it isn't available yet.
 
 ## Core rules
 
@@ -77,7 +84,7 @@ Patterns are Python regexes; quote them in single quotes. Risk terms are lowerca
 - **Tuning.** A repo can replace any risk's terms or paths in `.orca-kit/spec-review.yml` (`risk_terms`, `risk_paths`); a false high is a settings change for the user to make, never a reason to skip the sign-off.
 - If `python3` isn't available, say the risk step didn't run; never call a spec low risk on a by-hand reading.
 
-`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record specs/reviews/<slug>.json` validates a review record: `<file>:<line>: error [record.<rule>] <field>: <problem>. Fix: …`, then `<file>: ok, risk high (migration), signed off by <name> on <date>`. It exits 0 when valid, 1 on a rule failure, 2 for a usage error or a file that isn't a JSON object. `--rules` lists its rules; a record's optional `passes` (v0.4) is checked under `record.passes`. Run it after writing a record.
+`${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record specs/reviews/<slug>.json` validates a review record: `<file>:<line>: error [record.<rule>] <field>: <problem>. Fix: …`, then `<file>: ok, risk high (migration), signed off by <name> on <date>`. It exits 0 when valid, 1 on a rule failure, 2 for a usage error or a file that isn't a JSON object. `--rules` lists its rules; a record's optional `passes` (v0.4) is checked under `record.passes`, and its optional `questions` (v0.6, `pauses.md`) under `record.questions`. Run it after writing a record.
 
 ## Running a review
 
@@ -88,7 +95,7 @@ Patterns are Python regexes; quote them in single quotes. Risk terms are lowerca
 5. **Risk.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate --risk --findings $TMPDIR/spec-review/<slug>/merged.json specs/<slug>.md`. Its exit code is the review's result: 0 passes, 1 means a gate failed or a sign-off is needed (see [Risk and sign-off](#risk-and-sign-off)). Findings change only the risk tier, through their `risk`.
 6. **Record.** Write `specs/reviews/<slug>.json` (format in `risk.md`): `spec`, `risk` as step 5 reported it, `sign_off` kept from an existing record (or `null`), and `passes` with one entry, `{"findings": <the merged array>, "open_blockers": <its blocker count>, "words": <words from step 2>, "gates": "passed" | "failed"}` (`gates` from step 1's exit code). A new review replaces any earlier `passes`. A pass of the [revision loop](#revision-loop) appends one instead. Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record` on it and fix only what you wrote wrongly; then re-run step 5, which reads the record for the sign-off. Writing the findings never writes a sign-off.
 7. **Report.** Show the gates' and the risk step's lines, then the findings grouped by severity, each with its reviewer, rule, location, evidence, question and suggested fix:
-   - **Blockers** are open problems. The `fix` ones go back to the author through the [revision loop](#revision-loop). List the `decision` ones as questions for the user, with the options, and never pick one.
+   - **Blockers** are open problems. The `fix` ones go back to the author through the [revision loop](#revision-loop). The `decision` ones are asked as `pause` prints them ([Pauses](#pauses-and-the-summary)); never pick an answer.
    - **Nits** are comments: show them, never loop on them.
    - Nothing advisory fails the review: an LLM finding never turns a pass into a fail, and the result is step 5's exit code alone. Say how many blockers are open.
 
@@ -99,11 +106,22 @@ If subagents can't be launched, say the reviewers didn't run and report only the
 After the first pass, `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge` decides the next step. Read `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/loop.md` before running it: it has the steps of a pass, the hand-off, the verdicts, the same-blocker rule and the bloat guard.
 
 - **Run** `converge specs/<slug>.md` after pass 1, and `converge --previous $TMPDIR/spec-review/<slug>/pass-<n-1>/<slug>.md specs/<slug>.md` after each later pass. It reads the record's `passes`, re-runs the hard gates and counts words. It is deterministic and only reads files.
-- **Verdicts.** `converged` (exit 0): no open blockers and the gates pass. `continue` (exit 3): only `fix` blockers are open, fewer than before, and a pass is left. `stop` (exit 1), with one reason: `bloat-ceiling`, `bloat-growth`, `gate`, `oscillation` (a blocker the pass before didn't have, in a section the revision changed), `no-progress` (open blockers didn't strictly decrease), `decision` or `cap` (pass 3 still has blockers). A new blocker in a section the revision didn't change was caught late: a `note [loop.late]` line, not oscillation. Exit 2 is an input error.
-- **On continue**, save a copy of the spec outside the repo, then hand **only the `kind: fix` blockers** to the author: this session, revising through `orca-kit:spec` refine. Change only what the blockers point to, add no paragraphs, and don't interview the user. Then run a full pass again: the gates, the five reviewers **fresh** (never the earlier reviewers' contexts, never the author's reasoning or the blockers handed back), the merge, `gate --risk`, and a new entry appended to `passes`. At most 3 passes.
+- **Verdicts.** `converged` (exit 0): no open blockers and the gates pass. `continue` (exit 3): only `fix` blockers and answered decisions are open, fewer than before, and a pass is left. `stop` (exit 1), with one reason: `bloat-ceiling`, `bloat-growth`, `gate`, `oscillation` (a blocker the pass before didn't have, in a section the revision changed), `no-progress` (open blockers didn't strictly decrease), `decision` or `cap` (pass 3 still has blockers). A new blocker in a section the revision didn't change was caught late: a `note [loop.late]` line, not oscillation. Exit 2 is an input error.
+- **On continue**, save a copy of the spec outside the repo, then hand **only the `kind: fix` blockers and the decisions the user answered, with their answers,** to the author: this session, revising through `orca-kit:spec` refine. Change only what the blockers and answers point to, add no paragraphs, and don't interview the user. Then run a full pass again: the gates, the five reviewers **fresh** (never the earlier reviewers' contexts, never the author's reasoning or the blockers handed back), the merge, `gate --risk`, and a new entry appended to `passes`. At most 3 passes.
 - **Nits** are never handed back. They stay comments.
-- **On a stop**, stop: report the reason, `converge`'s lines, every pass's open-blocker count and each open blocker. On a `decision` stop, list each decision blocker as a question, with the options. On a bloat stop, the revision is rejected, and the author puts back the saved copy. Don't run another pass or revise further. v0.6 turns these stops into formal questions.
+- **On a stop**, don't run another pass or revise further. Run `pause`: it turns the stop into a question for the user ([Pauses](#pauses-and-the-summary)). On a bloat stop, the revision is rejected, and the author puts back the saved copy.
 - If `python3` isn't available, don't run the loop: report pass 1 and say the loop didn't run.
+
+## Pauses and the summary
+
+The review pauses to ask the user, with the evidence and the options, when a `decision` blocker is open, when the loop stops (`cap`, `oscillation`, `no-progress`, a bloat stop), when a spec fails the skim test (over its length ceiling, or the slicer's `slicer.oversized` blocker), and when a high-risk spec needs its sign-off. Read `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pauses.md` before the first pause: it has the triggers and their order, every option, the record's `questions`, how the loop resumes and the summary.
+
+- **Run** `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pause` after `converge`, with the same arguments. It runs `converge`, reads the record's answers and the risk tier, and prints the questions due now, one stage at a time: a rejected revision, then the skim test, then the loop's stop, then decisions, and the sign-off once the loop is done. A gate failure asks nothing: it is fixed through refine. Exit 1 means ask; 0 means nothing to ask, and its last line says what comes next (`continue to pass <n>`, or `render the summary`); 2 is an input error.
+- **Ask** each question exactly as printed, one at a time. Every question is one concrete choice between numbered options. Never add, drop, reorder or recommend an option, and never answer one yourself. Only the user's own reply is an answer; on anything else, ask again.
+- **Record** each answer as `pauses.md` says, in the record's `questions`: the id, question and options as printed, then the user's choice, their words verbatim and the date. Run `record` on the file. A sign-off is recorded in `sign_off`, as [Risk and sign-off](#risk-and-sign-off) says, not in `questions`. On a no, don't ask again.
+- **Resume.** Run `converge` and `pause` again on the same pass. Once every open decision is answered, the verdict is `continue`, and the answers go to the author with the fix blockers, as context. The author applies them through refine. The reviewers never see the answers and never write them into the spec. Answers add no passes: the cap stays at 3, and an answered decision still counts as open in its own pass.
+- **Summary.** When `pause` says `render the summary`, or the user ends the review, run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/summary specs/<slug>.md` and show it as printed. It is rendered from the record: the gates, the risk tier and sign-off, the resolved and open findings, the questions and answers, and the pass history. Its last line states that the accepted spec is the single source of truth for code generation. Then leave acceptance to the user, through `orca-kit:spec` refine.
+- If `python3` isn't available, don't pause by hand: report the last pass's decision blockers as open and say the pauses and the summary didn't run.
 
 ## Findings
 
@@ -161,8 +179,11 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/reviewers.md`: the reviewers' context and rule keys, the merge's duplicate rule, the record's `passes`, and the seeded examples.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/examples/`: a small fake repo with six specs, each seeding one problem, and `expected.json` naming the reviewer and rule that should catch it.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/record`: the review record validator.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge`: the revision loop's verdict (converged, continue or stop with a reason).
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge`: the revision loop's verdict (converged, continue or stop with a reason), counting the user's answered decisions.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pause`: whether the review pauses for the user, and the questions it asks, in order.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/summary`: the review summary, rendered from the record.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pauses.md`: the pause triggers and their order, the options, the record's `questions`, resuming after answers, and the summary.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/loop.md`: the revision loop: a pass, the hand-off to `orca-kit:spec` refine, the verdicts, the same-blocker rule, the bloat guard (`max_growth`) and the record's per-pass `words` and `gates`.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/risk.md`: the risk classifier's defaults and settings, the review record format, and how to record a sign-off.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings.schema.json`: the findings format as JSON Schema; the validator implements the same rules by hand, and its tests check the two agree.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validators' tests and fixtures (`gate-*` fixtures are specs, `risk-*` fixtures are small repos with `specs/` and review records, `loop-*` fixtures add `previous/<slug>.md`, the spec before its last revision); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validators' tests and fixtures (`gate-*` fixtures are specs, `risk-*` fixtures are small repos with `specs/` and review records, `loop-*` fixtures add `previous/<slug>.md`, the spec before its last revision, and `pause-*` fixtures are loop fixtures with questions and answers, one per pause trigger); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.
