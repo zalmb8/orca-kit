@@ -1,0 +1,34 @@
+[
+  {
+    "id": "architecture-1",
+    "reviewer": "architecture",
+    "severity": "blocker",
+    "kind": "fix",
+    "rule": "architecture.codebase-drift",
+    "location": {
+      "section": "Interfaces & Data Contracts",
+      "line": 47,
+      "ref": null
+    },
+    "evidence": "Oscillation error: `blocker <rule> (<id>, <kind>) is new in pass <n>, in <ref>, which the revision changed` (skills/spec-review/tests/test_loop.py:201 asserts the section wording)",
+    "concrete_question": "Which tests assert the old oscillation wording, and does the spec update them?",
+    "suggested_fix": "Name skills/spec-review/tests/test_loop.py under Existing: and say its assertion changes.",
+    "risk": null
+  },
+  {
+    "id": "architecture-2",
+    "reviewer": "architecture",
+    "severity": "blocker",
+    "kind": "fix",
+    "rule": "architecture.codebase-drift",
+    "location": {
+      "section": "Boundaries & Decision Log",
+      "line": 129,
+      "ref": "D-4"
+    },
+    "evidence": "**D-4:** The two oscillation fixtures move pass 2's new blocker to `ref: AC-4` (skills/spec-review/tests/fixtures/pause-oscillation has no AC-4 in pass 2)",
+    "concrete_question": "Which AC should the pause-oscillation fixture's new blocker point at?",
+    "suggested_fix": "Point D-4 at an AC the fixture's spec has.",
+    "risk": null
+  }
+]

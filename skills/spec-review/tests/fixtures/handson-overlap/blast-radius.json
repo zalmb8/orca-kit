@@ -1,0 +1,34 @@
+[
+  {
+    "id": "blast-radius-1",
+    "reviewer": "blast-radius",
+    "severity": "blocker",
+    "kind": "fix",
+    "rule": "blast-radius.incompatible-change",
+    "location": {
+      "section": "Interfaces & Data Contracts",
+      "line": 47,
+      "ref": null
+    },
+    "evidence": "Oscillation error: `blocker <rule> (<id>, <kind>) is new in pass <n>, in <ref>, which the revision changed` (skills/spec-review/tests/test_loop.py line 201 asserts \"in a section the revision changed\")",
+    "concrete_question": "How does skills/spec-review/tests/test_loop.py keep passing once the oscillation line names a ref?",
+    "suggested_fix": "Add test_loop.py to Existing: and an AC that its assertion is updated to the ref wording.",
+    "risk": "breaking-change"
+  },
+  {
+    "id": "blast-radius-2",
+    "reviewer": "blast-radius",
+    "severity": "nit",
+    "kind": "fix",
+    "rule": "blast-radius.stale-reference",
+    "location": {
+      "section": "Interfaces & Data Contracts",
+      "line": 46,
+      "ref": null
+    },
+    "evidence": "A finding's location changed when the ref's text differs (skills/spec-review/loop.md describes the section rule)",
+    "concrete_question": "Does the spec update loop.md's description of the same-blocker rule?",
+    "suggested_fix": "Add loop.md to the docs the change updates.",
+    "risk": null
+  }
+]

@@ -1,6 +1,6 @@
 # The revision loop
 
-Reference for the bounded revision loop (v0.5; answered decisions v0.6, in `pauses.md`). SKILL.md says when it runs. This file covers who does what in each pass, the hand-off to the author, the verdict `converge` prints, the same-blocker rule, the bloat guard and what the record holds for each pass.
+Reference for the bounded revision loop (v0.5; answered decisions v0.6, in `pauses.md`; pass snapshots and the shared open count v0.8). SKILL.md says when it runs. This file covers who does what in each pass, the hand-off to the author, the verdict `converge` prints, the same-blocker rule, the bloat guard and what the record holds for each pass.
 
 ## Who does what
 
@@ -15,12 +15,12 @@ If the review runs in a session that didn't draft the spec, that session is the 
 
 ## A pass
 
-Pass 1 is the review in SKILL.md, steps 1–6. Its record entry also holds `words` (from `gate --counts`) and `gates` (`passed` when `gate` exited 0, `failed` when it exited 1). Then, for every pass:
+Pass 1 is the review in SKILL.md, steps 1–6. Its record entry also holds `words` (from `gate --counts`) and `gates` (`passed` when `gate` exited 0, `failed` when it exited 1), and step 6 keeps its [snapshot](#pass-snapshots). Then, for every pass:
 
-1. **Verdict.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge specs/<slug>.md` on pass 1. From pass 2 on, add `--previous $TMPDIR/spec-review/<slug>/pass-<n-1>/<slug>.md`, the copy saved in step 2 of the pass before. It prints the problem lines, a status line and one verdict (below). Show the user the status line every pass. Then run `pause` with the same arguments (`pauses.md`). If it asks questions, ask them, record the answers and run step 1 again on the same pass.
-2. **On `continue`, save and hand back.** Copy the spec as it is now to `$TMPDIR/spec-review/<slug>/pass-<n>/<slug>.md`, outside the repo and under the spec's own name. Then hand the pass's `kind: fix` blockers to the author (see [The hand-off](#the-hand-off)).
+1. **Verdict.** Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/converge specs/<slug>.md`. From pass 2 on it compares the spec with the snapshot of the pass before; `--previous <file>` overrides that. It prints the problem lines, a status line and one verdict (below). Show the user the status line every pass. Then run `pause` with the same arguments (`pauses.md`). If it asks questions, ask them, record the answers and run step 1 again on the same pass.
+2. **On `continue`, hand back.** Hand the pass's `kind: fix` blockers to the author (see [The hand-off](#the-hand-off)). The pass's snapshot already holds the spec as it was before the revision.
 3. **Revise.** The author revises the spec through `orca-kit:spec` refine.
-4. **Re-review.** Run SKILL.md's review steps 1–6 again on the revised spec: the gates, the counts, the five reviewers in **fresh** contexts, the merge and `gate --risk`. Then **append** a pass to `passes` with its `findings`, `open_blockers`, `words` and `gates`, and set `risk` to what `gate --risk` just reported. Run `record` on the file. The hard gates re-run after every revision because step 4 always runs them.
+4. **Re-review.** Run SKILL.md's review steps 1–6 again on the revised spec: the gates, the counts, the five reviewers in **fresh** contexts, the merge and `gate --risk`. Then **append** a pass to `passes` with its `findings`, `open_blockers`, `words` and `gates`, keep its snapshot at `specs/reviews/<slug>/pass-<n>/<slug>.md`, and set `risk` to what `gate --risk` just reported (it keeps every risk an earlier pass raised). Run `record` on the file. The hard gates re-run after every revision because step 4 always runs them.
 5. Go back to step 1 with pass n+1.
 
 The loop never runs a fourth pass: `record` rejects a fourth entry, and `converge` stops at pass 3.
@@ -46,7 +46,7 @@ Refine has no step that takes findings as input, and `orca-kit:spec` isn't chang
 
 | Verdict | When | Exit | The skill then |
 |---|---|---|---|
-| stop: `bloat-ceiling` | The revision put the spec over `max_words` | 1 | Rejects the revision: the author puts back the saved copy from the pass before, and the skill reports the stop |
+| stop: `bloat-ceiling` | The revision put the spec over `max_words` | 1 | Rejects the revision: the author puts back the pass before's snapshot, and the skill reports the stop |
 | stop: `bloat-growth` | The revision grew the spec by more than `max_growth` of its previous words | 1 | The same as `bloat-ceiling` |
 | stop: `gate` | A hard gate fails on the spec, after a revision or on pass 1 | 1 | Shows `gate`'s failing lines. Gate failures are fixed through refine with the user, outside the loop |
 | stop: `oscillation` | The pass has a new blocker (see [The same blocker](#the-same-blocker)) in a section the revision changed, even if the count fell | 1 | Reports the new blockers and the ones still open |
@@ -56,9 +56,11 @@ Refine has no step that takes findings as input, and `orca-kit:spec` isn't chang
 | stop: `cap` | Pass 3 still has open blockers | 1 | Reports the open blockers |
 | continue | Only `fix` blockers and answered decisions are open, and there is a pass left | 3 | Hands them back, with the answers (step 2 above) |
 
-Exit 2 is an input problem, not a verdict: a usage error, an unreadable spec, invalid settings, an invalid record or one with no `passes`, pass 2 or 3 without `--previous` (or pass 1 with it), or a record whose last pass's `words` or `gates` (or the previous pass's `words`) don't match the specs given. Fix the input and run it again.
+Exit 2 is an input problem, not a verdict: a usage error, an unreadable spec, invalid settings, an invalid record or one with no `passes`, pass 2 or 3 with neither `--previous` nor a snapshot of the pass before (or pass 1 with `--previous`), a spec that differs from its own pass's snapshot, or a record whose last pass's `words` or `gates` (or the previous pass's `words`) don't match the specs given. Fix the input and run it again.
 
 Every stop except `decision` is non-convergence, and the loop stops there. It doesn't run another pass, and it doesn't revise the spec any further. `pause` turns the stop into a question with options (`pauses.md`): how to finish, whether to split, or, for a `decision`, the user's answer, after which the loop can resume.
+
+**One counting rule.** A pass's open blockers are its blockers, less a `slicer.oversized` blocker the user answered `keep` to in an earlier pass. The record's `open_blockers`, the status line here, `pause`'s history and `summary` all use one function (`open_counts`, in `record`), and `record` rejects a stored count that disagrees with it. In the first hands-on review the record stored 1 for a pass whose only blocker was a kept slicer blocker, while the summary showed 0; that can't happen now.
 
 An answered decision (v0.6) still counts as open in the pass it was raised in, so the next pass must have strictly fewer open blockers. Once the user answers `keep` to the skim question, the slicer's `slicer.oversized` blocker isn't open again in later passes; any other decision raised again is open, and asked again (`pauses.md`). Answers add no passes: the cap stays at 3. With no `questions` in the record, the verdicts are exactly as above.
 
@@ -83,6 +85,22 @@ max_growth: 0.25    # the most a revision may grow the spec in one pass, as a sh
 
 `max_growth` is a number of at least 0 (`0` allows no growth at all). The default, 0.25, lets a 600-word spec gain about 150 words in one pass, enough for a missing error state's AC and edge-case row, but not for a new section.
 
+## Pass snapshots
+
+Each pass's spec, exactly as the reviewers read it, is kept beside the record (v0.8):
+
+```
+specs/reviews/<slug>.json                      the record
+specs/reviews/<slug>/pass-1/<slug>.md          the spec pass 1 reviewed
+specs/reviews/<slug>/pass-2/<slug>.md          the spec pass 2 reviewed, after the first revision
+```
+
+- **Why.** `converge` and `pause` compare a pass with the spec before its revision. Until v0.8 that copy lived in `$TMPDIR` and was lost after the session, so a verdict like "converged at pass 2" couldn't be rechecked. With the snapshots it can, from the repo alone.
+- **Who writes them.** Claude, by hand, in SKILL.md's step 6, right after the pass's entry is written. No script writes a file. A fresh review removes the old review's directory first, since its passes are replaced.
+- **How they are read.** From pass 2 on, `converge` and `pause` use `pass-<n-1>/<slug>.md` as the previous spec when `--previous` isn't given; `--previous` overrides it. When `pass-<n>/<slug>.md` exists, the spec given must match it exactly, or the input is refused (exit 2). To recheck the last pass after the spec has moved on, give its snapshot as the spec: `converge --record specs/reviews/<slug>.json specs/reviews/<slug>/pass-<n>/<slug>.md`.
+- **Under the spec's own name**, so `gate` gives a snapshot the same result as the spec it copies (the checker compares the file name with `id`). `check specs/*.md` and `findings --stats` (`specs/reviews/*.json`) don't reach them.
+- **Records without snapshots** (v0.5–v0.7) stay valid, and behave as before: from pass 2 on they need `--previous`.
+
 ## The record's passes
 
 Each entry in `passes` (format in `risk.md` and `reviewers.md`) may also hold:
@@ -92,4 +110,4 @@ Each entry in `passes` (format in `risk.md` and `reviewers.md`) may also hold:
 | `words` | The spec's word count for that pass, from `gate --counts` |
 | `gates` | `passed` when `gate` exited 0 on the spec that pass reviewed, `failed` when it exited 1 |
 
-Both are optional, so every v0.4 record stays valid. The loop writes both for every pass. `converge` checks them against the specs it is given, so a verdict is never computed for a different version of the spec than the one reviewed. A fresh review, not a continuation of the loop, still replaces `passes` with one entry.
+Both are optional, so every v0.4 record stays valid. The loop writes both for every pass. `converge` checks them against the specs it is given, so a verdict is never computed for a different version of the spec than the one reviewed. `open_blockers` is the pass's open count under the one counting rule above. A fresh review, not a continuation of the loop, still replaces `passes` with one entry, and its snapshots with `pass-1`.

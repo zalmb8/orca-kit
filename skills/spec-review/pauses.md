@@ -17,7 +17,7 @@ No script writes the record, an answer or a sign-off. The answers are given to t
 
 ## When the review pauses
 
-Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pause` after every pass, right after `converge`, with the same arguments: `pause specs/<slug>.md` on pass 1, `pause --previous $TMPDIR/spec-review/<slug>/pass-<n-1>/<slug>.md specs/<slug>.md` after that. It runs `converge` itself, reads the record's questions and answers, and computes the risk tier from the spec and the last pass's findings. It asks one **stage** at a time. The first stage that applies is asked, in this order:
+Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pause specs/<slug>.md` after every pass, right after `converge`, with the same arguments. From pass 2 on it finds the previous spec in the snapshot of the pass before, as `converge` does (`loop.md`); `--previous` overrides it. It runs `converge` itself, reads the record's questions and answers, and computes the risk tier from the spec and every pass's findings: a risk any pass raised stays raised for the review (v0.8). It asks one **stage** at a time. The first stage that applies is asked, in this order:
 
 | Order | Trigger | When | Options (keys) |
 |---|---|---|---|
@@ -26,7 +26,7 @@ Run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/pause` after every pass, right aft
 | 3 | (none) | Any other hard-gate stop (`gate`): nothing to choose. The review ends, and the gates are fixed through refine with the user | none |
 | 4 | `loop` | `converge` stopped on `cap`, `oscillation` or `no-progress` | `finish`, `refine` |
 | 5 | `decision` | `converge` stopped on `decision`: one question per open decision blocker nobody has answered, in the order of the findings | the reviewer's alternatives `a`, `b`, … (up to `e`), then `other`, `open`; with no lettered alternatives, `other`, `open` |
-| 6 | `sign-off` | The loop is done (converged, or finished with blockers open by `finish` or `open`, but not after a bloat stop), the spec is high risk, and it has no current sign-off (v0.3) | yes and a name, or no |
+| 6 | `sign-off` | The loop is done (converged, or finished with blockers open by `finish` or `open`, but not after a bloat stop), the spec is high risk, and it has no current sign-off (v0.3). The risks include every risk an earlier pass's finding raised, even one a revision fixed, and each reason names its pass (v0.8) | yes and a name, or no |
 
 Why this order:
 
@@ -34,9 +34,9 @@ Why this order:
 - The skim test comes before everything else. A spec that should be split will be rewritten, so its decisions, its loop verdict and its sign-off would all be asked about text that is going away.
 - A gate failure is a fact for refine to fix with the user. It isn't a choice, so it gets no question, the same as in v0.5.
 - Decisions come after the loop's own stops. A pass that oscillated is reported as oscillation, the same as in `converge`.
-- The sign-off comes last, once no revision is left to change the risks. A sign-off asked mid-loop could go stale on the next pass.
+- The sign-off comes last, once no revision is left to change the risks. A sign-off asked mid-loop could go stale on the next pass. Revisions can add risks but never remove one within a review: in the first hands-on review, pass 1's findings raised `breaking-change`, pass 2 fixed how the spec described the change, the tier fell to low and the sign-off was never asked. A fixed description doesn't make the change less risky.
 
-Run `pause` on the spec the last pass reviewed. After a bloat stop, the rejected revision stays in place until `pause` says to render the summary; then the author puts back the saved copy. Put back earlier, the spec no longer matches the record, and `converge` and `pause` exit 2. The summary still renders, with a `Note:` line.
+Run `pause` on the spec the last pass reviewed. After a bloat stop, the rejected revision stays in place until `pause` says to render the summary; then the author puts back the pass before's snapshot. Put back earlier, the spec no longer matches the record, and `converge` and `pause` exit 2. The summary still renders, with a `Note:` line.
 
 `pause` prints the header line, `<file>: pause: ask <n> question(s) (<trigger>)`, followed by `; then, if the review goes on: decision, sign-off` when later stages are waiting. On `continue` it asks nothing, and the loop goes on. It exits 1 when there are questions to ask, 0 when there are none, and 2 for `converge`'s input errors. `pause --rules` lists the stages.
 
@@ -140,8 +140,8 @@ How answers interact with the loop's rules:
 
 When `pause` says `render the summary`, or the user stops the review, run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/summary specs/<slug>.md` and show its output as printed. It is rendered from the record alone, checked by `record` first. The spec is read only for its status and word count. It shows:
 
-- **Header.** The spec and its status, the hard gates on the last pass, the risk tier and the sign-off, the open blockers at the last pass, and how many questions were asked and answered.
-- **Pass history.** Each pass's open blockers (fix and decision), nits, words and gate result.
+- **Header.** The spec and its status, the hard gates on the last pass, the risk tier and the sign-off (and, for each risk a finding raised, the pass that first raised it), the open blockers at the last pass, and how many questions were asked and answered.
+- **Pass history.** Each pass's open blockers (fix and decision), nits, words and gate result. The open count is the record's `open_blockers`, counted by the same function (`loop.md`).
 - **Resolved since pass 1.** Blockers from an earlier pass with no matching blocker (rule and section) in the last one: fixed by a revision, answered by the user and then revised, or (the slicer's blocker, after `keep`) raised again and not reopened.
 - **Open at the last pass.** Every open blocker with its question, marked when it is answered but not yet applied, and every nit as a comment.
 - **Questions and answers.** Each question with its options, and the user's choice and words, or "Not answered yet".

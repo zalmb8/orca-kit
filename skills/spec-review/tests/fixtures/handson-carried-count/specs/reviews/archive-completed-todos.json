@@ -1,0 +1,129 @@
+{
+  "spec": "archive-completed-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 57,
+            "ref": "AC-4"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        },
+        {
+          "id": "ambiguity-2",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.missing-error-state",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 59,
+            "ref": "AC-5"
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        },
+        {
+          "id": "slicer-1",
+          "reviewer": "slicer",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "slicer.oversized",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": 13,
+            "ref": null
+          },
+          "evidence": "specs/archive-completed-todos.md: 655 words (ceiling 2000), 12 ACs. \"A new `todo archive` command moves every completed todo out of the store\"",
+          "concrete_question": "Should this become two specs, archiving first and the archive file's format second, or do you want a different split?",
+          "suggested_fix": "1. Archive (AC-1 to AC-6): moves completed todos, ships alone. 2. Archive format (AC-7 to AC-12): needs slice 1. Build slice 1 first.",
+          "risk": null
+        },
+        {
+          "id": "security-1",
+          "reviewer": "security",
+          "severity": "nit",
+          "kind": "fix",
+          "rule": "security.hardening",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 43,
+            "ref": null
+          },
+          "evidence": "the text at this location",
+          "concrete_question": "What exactly should the spec say here?",
+          "suggested_fix": "State the exact behavior.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 3,
+      "words": 655,
+      "gates": "passed"
+    },
+    {
+      "findings": [
+        {
+          "id": "slicer-2",
+          "reviewer": "slicer",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "slicer.oversized",
+          "location": {
+            "section": "Goal & Non-Goals",
+            "line": 12,
+            "ref": null
+          },
+          "evidence": "specs/archive-completed-todos.md: 655 words (ceiling 2000), 12 ACs. \"A new `todo archive` command moves every completed todo out of the store\"",
+          "concrete_question": "Should this become two specs, archiving first and the archive file's format second, or do you want a different split?",
+          "suggested_fix": "1. Archive (AC-1 to AC-6): moves completed todos, ships alone. 2. Archive format (AC-7 to AC-12): needs slice 1. Build slice 1 first.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 1,
+      "words": 664,
+      "gates": "passed"
+    }
+  ],
+  "questions": [
+    {
+      "id": "pass-1.skim",
+      "pass": 1,
+      "trigger": "skim",
+      "finding": "slicer-1",
+      "question": "Should this become two specs, archiving first and the archive file's format second, or do you want a different split?",
+      "options": [
+        {
+          "key": "split",
+          "text": "Split it: stop this review, split the spec with orca-kit:spec into smaller specs (along the proposed slices or your own), and review each one on its own."
+        },
+        {
+          "key": "keep",
+          "text": "Keep it as one spec: the review goes on, and the slicer's blocker counts as answered."
+        }
+      ],
+      "answer": {
+        "choice": "keep",
+        "words": "keep it as one, it's one feature",
+        "answered_on": "2026-11-27"
+      }
+    }
+  ]
+}
