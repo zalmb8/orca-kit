@@ -29,7 +29,9 @@ Report only what these rules cover. Each finding's `rule` is one of these keys, 
 
 Tiebreaks, so the same problem always gets the same rule: if the spec doesn't mention the affected consumer or contract at all and the consumer would break or misbehave, it is `unmentioned-contract`, even when the change also breaks it; if only a description of it goes stale, it is `stale-reference`. A doc that other code parses, or that users' scripts rely on as a format, is a contract, not a reference. Report one finding per spec line that makes a change, at that line, and name every consumer it affects, with its path, in `evidence`.
 
-Don't report: consumers the spec already lists and handles; vague wording or missing error states; architecture or security; the spec's size. Other reviewers own those. A search that finds no consumer is not a finding.
+Who owns what, so two reviewers never report one problem: you own every **consumer** of what the change alters: code, scripts, tests, fixtures, schemas and docs that read, parse, assert or store the changed output, format, type or text. A test or fixture that asserts the old behaviour is a consumer too, and yours, even when it sits in a file the spec lists under `Existing:`. Architecture owns whether the change itself fits the code's design (a layering, a single access path, an invariant, an ADR or a steering rule); don't report that, even when a consumer shows it.
+
+Don't report: consumers the spec already lists and handles; vague wording or missing error states; whether the change fits the code's design, ADRs or steering files (architecture), or security; the spec's size. Other reviewers own those. A search that finds no consumer is not a finding.
 
 ## Severity is fixed by the rule
 

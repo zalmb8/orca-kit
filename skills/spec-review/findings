@@ -59,6 +59,10 @@ then the first given (duplicates share a rule, so they share a severity);
 it takes the place of the first of the set. Each dropped duplicate is
 reported on stderr as
   <file>:<line>: note [merge.duplicate] finding #<n> (<id>): same rule and location as <id> in <file>, dropped.
+Two kept findings from different reviewers at the same spot (the same
+section, and the same line or ref) whose evidence names the same repo path
+are reported, never merged or dropped (v0.8), as
+  <file>:<line>: note [merge.overlap] finding #<n> (<id>, <rule>): same spot as <id> (<rule>) in <file>, and both cite <path>; ...
 then one line:
   merged: <n> findings from <f> files: <b> blocker (<d> decision), <k> nit; <u> duplicates dropped, <r> rejected
 The exit code is the worst of the files' (0, 1 or 2), or 1 for an id clash;
@@ -463,7 +467,39 @@ def tally_of(findings):
 MERGE_RULE_TEXT = {
     "merge.duplicate": "note: same rule, location (section, line, ref) and risk as a kept finding; a decision, "
                        "then the first is kept",
+    "merge.overlap": "note: findings from different reviewers at the same spot (section, and line or ref) whose evidence "
+                     "names the same repo path; both are kept, and the note only reports it (v0.8)",
 }
+
+# A repo path in a finding's evidence: words joined by '/', with an optional :line.
+EVIDENCE_PATH_RE = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+")
+
+
+def evidence_paths(finding):
+    return set(m.group(0).rstrip(".") for m in EVIDENCE_PATH_RE.finditer(finding["evidence"]))
+
+
+def overlaps(findings):
+    """[(later, earlier, shared paths)]: pairs from different reviewers at the same spot citing the same path.
+
+    The same spot is the same section (ignoring case and spacing) and the same
+    line, or the same ref (ignoring case), where neither is null. Only
+    reported: two rubrics' findings are never merged or dropped by this.
+    """
+    out = []
+    for j, b in enumerate(findings):
+        for a in findings[:j]:
+            if a["reviewer"] == b["reviewer"]:
+                continue
+            la, lb = a["location"], b["location"]
+            if _norm(la["section"]) != _norm(lb["section"]):
+                continue
+            same_line = la["line"] is not None and la["line"] == lb["line"]
+            same_ref = la["ref"] is not None and lb["ref"] is not None and _norm(la["ref"]) == _norm(lb["ref"])
+            shared = sorted(evidence_paths(a) & evidence_paths(b))
+            if (same_line or same_ref) and shared:
+                out.append((b, a, shared))
+    return out
 
 
 def _norm(text):
@@ -526,6 +562,11 @@ def merge(paths):
         p, n, line = where[id(f)]
         lines.append("%s:%d: note [merge.duplicate] finding #%d (%s): same rule and location as %s in %s, dropped." % (
             p, line, n, f["id"], instead["id"], where[id(instead)][0]))
+    for f, other, shared in overlaps(kept):
+        p, n, line = where[id(f)]
+        lines.append("%s:%d: note [merge.overlap] finding #%d (%s, %s): same spot as %s (%s) in %s, and both cite %s; "
+                     "both kept: say so when you report them, and check whether the two rubrics own one problem." % (
+                         p, line, n, f["id"], f["rule"], other["id"], other["rule"], where[id(other)][0], ", ".join(shared)))
     lines.append("merged: %d finding%s from %d file%s: %s; %d duplicate%s dropped, %d rejected" % (
         len(kept), "" if len(kept) == 1 else "s", len(paths), "" if len(paths) == 1 else "s", tally_of(kept),
         len(dropped), "" if len(dropped) == 1 else "s", rejected))

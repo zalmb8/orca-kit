@@ -25,7 +25,10 @@ that applies:
   4. loop       a cap, oscillation or no-progress stop: ask how to finish
   5. decision   each open decision blocker nobody has answered yet
   6. sign-off   a high-risk spec without a current sign-off, once the loop
-                is done (converged, or finished with blockers open)
+                is done (converged, or finished with blockers open). The
+                risks are the spec's and every pass's findings' (v0.8): a
+                risk an earlier pass raised stays raised, and its reason
+                names that pass.
 
 A question is due when the record has no answer for its id yet. An answer
 that ends the review (split, trim, refine, or a decision left open) skips
@@ -273,8 +276,8 @@ def plan(st, spec, previous):
     if slicer is not None and (n, slicer["id"]) in st["answered"]:
         slicer = None  # answered `keep`: no longer a skim failure
 
-    last = data["passes"][-1]["findings"]
-    reasons, risks = GATE.risks_of(GATE.Doc(st["text"]), config, last)
+    # Every pass's findings, not only the last: a risk a pass raised stays raised for the rest of the review (v0.8).
+    reasons, risks = GATE.risks_of(GATE.Doc(st["text"]), config, [], data["passes"])
     so = data["sign_off"]
     needs_sign_off = bool(risks) and (so is None or sorted(so["risks"], key=GATE.RISKS.index) != risks)
     rec = st["record"]
@@ -355,7 +358,7 @@ def plan(st, spec, previous):
 def run(spec, repo_opt=None, record_path=None, previous=None):
     """(exit code, output lines). Raises CONVERGE.InputError for exit 2."""
     _, lines, st = CONVERGE.assess(spec, repo_opt, record_path, previous)
-    code, header, asked, final = plan(st, spec, previous)
+    code, header, asked, final = plan(st, spec, st["previous"])  # --previous, or the pass snapshot converge found
     out = lines[-2:] + header
     for _, _, block_lines in asked:
         out += block_lines

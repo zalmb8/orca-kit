@@ -10,9 +10,11 @@ Usage:
                   .orca-kit/ or .git.
   --record FILE   The review record. Defaults to specs/reviews/<slug>.json
                   next to the spec.
-  --previous P    The spec as it was before the author's last revision: the
-                  copy the skill saved before handing the blockers back.
-                  Required from pass 2 on, and not allowed on pass 1.
+  --previous P    The spec as it was before the author's last revision.
+                  Not allowed on pass 1. From pass 2 on it defaults to the
+                  snapshot of the pass before, kept beside the record
+                  (v0.8): specs/reviews/<slug>/pass-<n-1>/<slug>.md. Given,
+                  it overrides the snapshot; with neither, exit 2.
   --rules         List the stop reasons, and exit.
 
 The loop (docs/spec-review/ROADMAP.md, v0.5, and loop.md next to this
@@ -75,12 +77,23 @@ Settings, in .orca-kit/spec-review.yml next to the gate's (gate --help):
   max_words: 2000     # the length ceiling, also the bloat ceiling
   max_growth: 0.25    # the most a revision may grow the spec in one pass
 
+Snapshots (v0.8): the skill keeps each pass's reviewed spec beside the
+record, at specs/reviews/<slug>/pass-<n>/<slug>.md (under the spec's own
+name, so gate gives it the spec's result; `check specs/*.md` doesn't reach
+it). From them every pass's verdict can be recomputed from what is in the
+repo: pass n's previous spec is pass n-1's snapshot. When pass n's own
+snapshot exists, the spec given must match it (exit 2 if not), so a verdict
+is never computed for another text. To recheck the last pass after the spec
+has moved on, give its snapshot as the spec and the record with --record.
+
 Every input is a file, so the same record and specs always get the same
 verdict. This script only reads files; it never edits the spec or the record.
 
 Exit codes: 0 converged, 1 stop, 3 continue, 2 a usage error, an unreadable
 or unparseable spec, an invalid settings file or record, a record with no
-passes, or a record whose `words` or `gates` don't match the specs given.
+passes, pass 2 or 3 with neither --previous nor a snapshot of the pass
+before, a spec that differs from its pass's snapshot, or a record whose
+`words` or `gates` don't match the specs given.
 
 Python 3 standard library only; no install step.
 """
@@ -136,17 +149,13 @@ class InputError(Exception):
         self.lines = lines
 
 
-def plural(n, word, many=None):
-    return "%d %s" % (n, word if n == 1 else (many or word + "s"))
-
-
-def blocker_key(finding):
-    """The same blocker across passes: rule and section, ignoring case and spacing."""
-    return (finding["rule"], FINDINGS._norm(finding["location"]["section"]))
-
-
-def blockers_of(entry):
-    return [f for f in entry["findings"] if f["severity"] == "blocker"]
+# The counting rule lives in record (v0.8), so the record's stored open_blockers,
+# this verdict, pause and summary can't count differently.
+plural = RECORD.plural
+blocker_key = RECORD.blocker_key
+blockers_of = RECORD.blockers_of
+resolutions = RECORD.resolutions
+open_of = RECORD.open_of
 
 
 def new_blockers(current, previous):
@@ -162,36 +171,9 @@ def new_blockers(current, previous):
     return out
 
 
-def resolutions(data):
-    """(answered, carried), each keyed by (pass number, finding id).
-
-    answered: the decision blockers whose question in that pass has an
-    answer that resolves them (RECORD.RESOLVING), mapped to the question.
-    carried: the slicer's slicer.oversized blockers in a pass after the user
-    answered `keep` to it, mapped to that question; they aren't open. Only a
-    kept skim answer carries: any other decision raised again may be a new
-    question under the same rule and section, so it is open and asked again.
-    """
-    answered = {}
-    for q in data.get("questions") or []:
-        if q["trigger"] in ("decision", "skim") and q["finding"] and q["answer"] and q["answer"]["choice"] in RECORD.RESOLVING:
-            answered[(q["pass"], q["finding"])] = q
-    carried, earlier = {}, {}
-    for p, entry in enumerate(data["passes"], 1):
-        decisions = [f for f in blockers_of(entry) if f["kind"] == "decision"]
-        for f in decisions:
-            if blocker_key(f) in earlier and (p, f["id"]) not in answered:
-                carried[(p, f["id"])] = earlier[blocker_key(f)]
-        for f in decisions:
-            q = answered.get((p, f["id"]))
-            if q and q["trigger"] == "skim" and blocker_key(f) not in earlier:
-                earlier[blocker_key(f)] = q
-    return answered, carried
-
-
-def open_of(entry, pass_no, carried):
-    """The pass's blockers, less the decisions an earlier answer already resolved."""
-    return [f for f in blockers_of(entry) if (pass_no, f["id"]) not in carried]
+def snapshot_path(record_path, slug, pass_no):
+    """Where a pass's reviewed spec is kept beside the record (v0.8): specs/reviews/<slug>/pass-<n>/<slug>.md."""
+    return os.path.join(os.path.dirname(record_path), slug, "pass-%d" % pass_no, slug + ".md")
 
 
 def sections_of(text):
@@ -256,11 +238,19 @@ def assess(spec, repo_opt=None, record_path=None, previous=None):
     if not passes:
         raise InputError(["%s:1: error [loop.record] file: %s has no passes. Fix: Record the review pass before asking for a verdict." % (spec, rec)])
     n = len(passes)
-    if n >= 2 and previous is None:
-        raise InputError(["%s:1: error [usage] file: pass %d needs --previous, the spec as it was before the revision. "
-                          "Fix: Pass the copy saved before the blockers were handed back." % (spec, n)])
     if n == 1 and previous is not None:
         raise InputError(["%s:1: error [usage] file: pass 1 has no revision, so --previous doesn't apply. Fix: Leave it out." % spec])
+    if n >= 2 and previous is None:
+        snap = snapshot_path(rec, data["spec"], n - 1)
+        if not os.path.isfile(snap):
+            raise InputError(["%s:1: error [usage] file: pass %d needs --previous, the spec as it was before the revision, "
+                              "and there is no snapshot of pass %d at %s. Fix: Pass the copy saved before the blockers were handed back, "
+                              "or keep each pass's reviewed spec at that path." % (spec, n, n - 1, snap)])
+        previous = snap
+    own = snapshot_path(rec, data["spec"], n)
+    if os.path.isfile(own) and read_spec(own, "snapshot of pass %d" % n) != text:
+        raise InputError(["%s:1: error [loop.record] file: the spec differs from %s, the snapshot of the pass %d review. "
+                          "Fix: Give the spec that pass reviewed, or correct the snapshot." % (spec, own, n)])
 
     gate_code, gate_lines = GATE.gate_file(spec, repo_opt)
     if gate_code == 2:
@@ -366,7 +356,8 @@ def assess(spec, repo_opt=None, record_path=None, previous=None):
     lines = problems + notes + [status]
     state = {"spec": spec, "pass": n, "reason": reason, "open": current, "unanswered": unanswered, "answered_now": answered_now,
              "fixes": fixes, "data": data, "config": config, "text": text, "words": words, "prev_words": prev_words,
-             "gates_ok": gates_ok, "gate_lines": gate_lines, "carried": carried, "answered": answered, "record": rec}
+             "gates_ok": gates_ok, "gate_lines": gate_lines, "carried": carried, "answered": answered, "record": rec,
+             "previous": previous}
     if reason:
         state["verdict"] = "stop"
         return 1, lines + ["%s: stop at pass %d: %s" % (spec, n, reason)], state

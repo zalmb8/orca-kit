@@ -52,7 +52,11 @@ from the spec's terms and paths or from a finding's risk, then:
   <file>: risk high: <risks>; sign-off stale (signed for <risks>)
 A high-risk spec passes only when specs/reviews/<slug>.json (next to the
 spec, checked with the record validator) holds a sign-off whose risks equal
-the current risks. This script never writes that file.
+the current risks. This script never writes that file. The risks are the
+spec's terms and paths, the --findings, and (v0.8) every finding with a
+risk in the record's passes: a risk any pass raised stays raised for the
+rest of the review, and its reason says which pass raised it. A fresh
+review replaces the passes, so it starts over.
 
 Exit codes: 0 every gate passes (and, with --risk, the spec is low risk or
 signed off), 1 a gate fails or a sign-off is missing or stale, 2 a usage
@@ -1159,7 +1163,7 @@ RISK_RULE_TEXT = dict(
     [("risk.%s" % r, "warning: a reason the spec is high risk for %s (a term or path the spec names, or a finding)" % r) for r in RISKS]
     + [("risk.sign-off", "a high-risk spec has a sign-off in specs/reviews/<slug>.json whose risks match the current risks exactly"),
        ("risk.findings", "every --findings file passes the findings validator"),
-       ("risk.record", "specs/reviews/<slug>.json, if present, passes the record validator")])
+       ("risk.record", "specs/reviews/<slug>.json, if present, passes the record validator; its passes' findings with a risk keep it raised")])
 
 Reason = namedtuple("Reason", "risk line section message")
 
@@ -1265,17 +1269,23 @@ def classify(doc, config):
     return out
 
 
-def finding_reasons(paths):
-    """([Reason], error lines). Error lines mean a findings file isn't valid."""
-    reasons, errors = [], []
+def load_findings(paths):
+    """(findings, error lines). Error lines mean a findings file isn't valid."""
+    found, errors = [], []
     for path in paths:
         code, lines = FINDINGS.check_file(path)
         if code:
             errors.extend(lines)
             continue
         with open(path, encoding="utf-8") as f:
-            reasons.extend(reasons_from_findings(json.load(f)))
-    return reasons, errors
+            found.extend(json.load(f))
+    return found, errors
+
+
+def finding_reasons(paths):
+    """([Reason], error lines). Error lines mean a findings file isn't valid."""
+    found, errors = load_findings(paths)
+    return reasons_from_findings(found), errors
 
 
 def reasons_from_findings(findings):
@@ -1291,9 +1301,30 @@ def reasons_from_findings(findings):
     return out
 
 
-def risks_of(doc, config, findings):
-    """(sorted reasons, risks) for a spec and a list of valid findings, as risk_step computes them."""
-    reasons = classify(doc, config) + reasons_from_findings(findings)
+def reasons_from_passes(passes, given=()):
+    """[Reason] for the findings of a record's passes that name a risk, saying which pass raised it (v0.8).
+
+    A risk a pass's finding raised stays raised for the rest of the review:
+    fixing how the spec describes a change doesn't make the change less
+    risky, and a fresh reviewer may simply not repeat the finding. A finding
+    also given with --findings (the pass being recorded) is listed once, as
+    that finding. A fresh review replaces the passes, so it starts over.
+    """
+    out = []
+    for n, entry in enumerate(passes, 1):
+        for finding in entry["findings"]:
+            if finding["risk"] is None or finding in given:
+                continue
+            loc = finding["location"]
+            out.append(Reason(finding["risk"], loc["line"] or 1, loc["section"],
+                              "finding %s (%s %s from %s) raised it in pass %d, and it stays raised for this review" % (
+                                  finding["id"], finding["severity"], finding["kind"], finding["reviewer"], n)))
+    return out
+
+
+def risks_of(doc, config, findings, passes=()):
+    """(sorted reasons, risks) for a spec, a list of valid findings and a record's passes, as risk_step computes them."""
+    reasons = classify(doc, config) + reasons_from_findings(findings) + reasons_from_passes(passes, findings)
     reasons.sort(key=lambda r: (r.line, RISKS.index(r.risk), r.message))
     return reasons, sorted({r.risk for r in reasons}, key=RISKS.index)
 
@@ -1305,27 +1336,33 @@ def record_path(spec_path):
 
 def risk_step(path, doc, config, findings_paths):
     """(exit code, output lines) for the risk tier and sign-off of one spec."""
-    reasons, errors = finding_reasons(findings_paths)
+    found, errors = load_findings(findings_paths)
     if errors:
         return 2, errors + ["%s:1: error [risk.findings] file: a findings file isn't valid, so the risk tier isn't computed. "
                             "Fix: Correct the findings the validator rejected, or leave them out, and re-run." % path]
-    reasons = classify(doc, config) + reasons
-    reasons.sort(key=lambda r: (r.line, RISKS.index(r.risk), r.message))
-    risks = sorted({r.risk for r in reasons}, key=RISKS.index)
     rec = record_path(path)
     fix = "Show the user these risks and reasons; a high-risk spec needs their sign-off in %s" % rec
-    lines = ["%s:%d: warning [risk.%s] %s: %s. Fix: %s." % (path, r.line, r.risk, r.section, r.message, fix) for r in reasons]
+
+    def warnings(reasons):
+        return ["%s:%d: warning [risk.%s] %s: %s. Fix: %s." % (path, r.line, r.risk, r.section, r.message, fix) for r in reasons]
+
+    data = None
+    if os.path.isfile(rec):
+        # The record is read for every tier: its passes may hold a risk an earlier pass raised (v0.8).
+        code, rec_lines, data = RECORD.check_file(rec)
+        if data is None:
+            reasons, _ = risks_of(doc, config, found)
+            return 2, warnings(reasons) + rec_lines + ["%s:1: error [risk.record] file: the review record %s isn't valid. "
+                                                       "Fix: Correct it; `record --help` shows the format." % (path, rec)]
+    reasons, risks = risks_of(doc, config, found, (data or {}).get("passes") or [])
+    lines = warnings(reasons)
     if not risks:
         return 0, lines + ["%s: risk low" % path]
     shown = ", ".join(risks)
     ask = "Show the user the risks and reasons and ask whether they sign off; record it only on their explicit yes"
-    if not os.path.isfile(rec):
+    if data is None:
         lines.append("%s:1: error [risk.sign-off] file: high risk (%s) and no review record at %s. Fix: %s." % (path, shown, rec, ask))
         return 1, lines + ["%s: risk high: %s; sign-off needed" % (path, shown)]
-    code, rec_lines, data = RECORD.check_file(rec)
-    if data is None:
-        return 2, lines + rec_lines + ["%s:1: error [risk.record] file: the review record %s isn't valid. "
-                                       "Fix: Correct it; `record --help` shows the format." % (path, rec)]
     so = data["sign_off"]
     if so is None:
         lines.append("%s:1: error [risk.sign-off] file: high risk (%s) and %s has no sign-off. Fix: %s." % (path, shown, rec, ask))

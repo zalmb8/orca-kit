@@ -514,7 +514,7 @@ class Docs(unittest.TestCase):
         self.assertNotIn("- [ ]", part)
 
     def test_plugin_version(self):
-        self.assertEqual(json.loads(self.read(PLUGIN_ROOT, ".claude-plugin", "plugin.json"))["version"], "0.15.0")
+        self.assertEqual(json.loads(self.read(PLUGIN_ROOT, ".claude-plugin", "plugin.json"))["version"], "0.16.0")
 
 
 if __name__ == "__main__":

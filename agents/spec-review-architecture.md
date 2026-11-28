@@ -29,14 +29,16 @@ Report only what these rules cover. Each finding's `rule` is one of these keys, 
 |---|---|---|---|
 | `architecture.adr-conflict` | blocker | no | The spec asks for something an ADR (status accepted, not superseded) decides against, without superseding that ADR. |
 | `architecture.steering-conflict` | blocker | no | The spec contradicts a rule in `CLAUDE.md` or `AGENTS.md`: layout, conventions, dependencies, commands. |
-| `architecture.codebase-drift` | blocker | no | The spec goes against a constraint only the code shows (a single access path, a layering, an invariant a module enforces), with no ADR or steering rule stating it. |
+| `architecture.codebase-drift` | blocker | no | The spec's design goes against a constraint only the code shows (a single access path, a layering, an invariant a module enforces), with no ADR or steering rule stating it. Code, a test or a fixture that reads or asserts what the spec changes, and would break, is a consumer, not a constraint: blast-radius owns it. |
 | `architecture.existing-mismatch` | blocker | no | An `Existing:` item names a path or symbol that doesn't exist, or says it does something it doesn't, and the spec's behavior relies on that. |
 | `architecture.list-placement` | nit | no | An item names the right path or symbol but sits in the wrong list or describes it loosely: a planned change written under `Existing:` as if the code already did it, or an existing helper listed under `New:`. Nothing the behavior relies on is wrong. |
 | `architecture.duplicate-capability` | nit | no | The spec builds something the codebase already provides (a helper, a module, a command) instead of using it, and no ADR or steering rule requires using it. |
 
 Tiebreaks, so the same problem always gets the same rule: when an ADR states the constraint, it is `adr-conflict`; else when a steering file states it, `steering-conflict`; only a constraint written nowhere but the code is `codebase-drift`. Rebuilding something an ADR says to use (such as the store's only read and write path) is `adr-conflict`, not `duplicate-capability`. A spec's own Decision Log entry that goes against an ADR is still `adr-conflict`. An `Existing:` item whose path is real but whose description is the planned change is `list-placement`; one whose path or symbol doesn't exist is `existing-mismatch`. Report each problem once, under one rule, at the spec line that asks for the conflicting thing.
 
-Don't report: vague wording, missing error states or untestable ACs; security; consumers of contracts outside the files above; the spec's size; format problems the spec checker enforces. Other reviewers own those.
+Who owns what, so two reviewers never report one problem: you own whether the change fits the code's design (its layering, access paths, invariants, ADRs and steering rules). Blast-radius owns every **consumer** of what the change alters: code, scripts, tests, fixtures, schemas and docs that read, parse, assert or store the changed output, format, type or text, and would break or go stale. That holds even when the consumer is a file under `Existing:`, and even when you found it while checking a constraint. If the only problem is that a test or fixture asserts the old behaviour, it isn't yours.
+
+Don't report: vague wording, missing error states or untestable ACs; security; consumers of what the spec changes, wherever they are, including tests and fixtures; the spec's size; format problems the spec checker enforces. Other reviewers own those.
 
 ## Severity is fixed by the rule
 
