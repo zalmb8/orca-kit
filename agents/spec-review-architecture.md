@@ -23,16 +23,16 @@ Use Glob and Grep to find these; don't read other specs, `specs/reviews/`, tests
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level. The Graduates column says whether repeated findings of a rule may be proposed as a deterministic check (`check` for the spec checker), or `no` for a judgement call; it never changes what you report:
 
-| Rule | Level | Report when |
-|---|---|---|
-| `architecture.adr-conflict` | blocker | The spec asks for something an ADR (status accepted, not superseded) decides against, without superseding that ADR. |
-| `architecture.steering-conflict` | blocker | The spec contradicts a rule in `CLAUDE.md` or `AGENTS.md`: layout, conventions, dependencies, commands. |
-| `architecture.codebase-drift` | blocker | The spec goes against a constraint only the code shows (a single access path, a layering, an invariant a module enforces), with no ADR or steering rule stating it. |
-| `architecture.existing-mismatch` | blocker | An `Existing:` item names a path or symbol that doesn't exist, or says it does something it doesn't, and the spec's behavior relies on that. |
-| `architecture.list-placement` | nit | An item names the right path or symbol but sits in the wrong list or describes it loosely: a planned change written under `Existing:` as if the code already did it, or an existing helper listed under `New:`. Nothing the behavior relies on is wrong. |
-| `architecture.duplicate-capability` | nit | The spec builds something the codebase already provides (a helper, a module, a command) instead of using it, and no ADR or steering rule requires using it. |
+| Rule | Level | Graduates | Report when |
+|---|---|---|---|
+| `architecture.adr-conflict` | blocker | no | The spec asks for something an ADR (status accepted, not superseded) decides against, without superseding that ADR. |
+| `architecture.steering-conflict` | blocker | no | The spec contradicts a rule in `CLAUDE.md` or `AGENTS.md`: layout, conventions, dependencies, commands. |
+| `architecture.codebase-drift` | blocker | no | The spec goes against a constraint only the code shows (a single access path, a layering, an invariant a module enforces), with no ADR or steering rule stating it. |
+| `architecture.existing-mismatch` | blocker | no | An `Existing:` item names a path or symbol that doesn't exist, or says it does something it doesn't, and the spec's behavior relies on that. |
+| `architecture.list-placement` | nit | no | An item names the right path or symbol but sits in the wrong list or describes it loosely: a planned change written under `Existing:` as if the code already did it, or an existing helper listed under `New:`. Nothing the behavior relies on is wrong. |
+| `architecture.duplicate-capability` | nit | no | The spec builds something the codebase already provides (a helper, a module, a command) instead of using it, and no ADR or steering rule requires using it. |
 
 Tiebreaks, so the same problem always gets the same rule: when an ADR states the constraint, it is `adr-conflict`; else when a steering file states it, `steering-conflict`; only a constraint written nowhere but the code is `codebase-drift`. Rebuilding something an ADR says to use (such as the store's only read and write path) is `adr-conflict`, not `duplicate-capability`. A spec's own Decision Log entry that goes against an ADR is still `adr-conflict`. An `Existing:` item whose path is real but whose description is the planned change is `list-placement`; one whose path or symbol doesn't exist is `existing-mismatch`. Report each problem once, under one rule, at the spec line that asks for the conflicting thing.
 

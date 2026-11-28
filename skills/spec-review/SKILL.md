@@ -1,19 +1,15 @@
 ---
 name: spec-review
-description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling), tier its risk (auth, migrations, data models, billing, public or breaking API changes) and require a human sign-off for a high-risk spec, run the bounded revision loop that hands fix blockers back to the author until the spec converges or the loop stops, pause to ask the user one concrete choice at a time (a decision finding, a stopped loop, a high-risk sign-off, a spec that fails the skim test) and resume with their answers, render the review summary the user reads before accepting, or validate a reviewer's findings JSON or a review record.
+description: Reviews a spec written by orca-kit:spec (specs/<slug>.md, normally a draft about to be accepted) before code is written, pairing deterministic hard gates with typed findings from narrow reviewers, and keeping product decisions with the user. Use when the user says "review the X spec", "is X ready to build", "check X before we accept it" or "run spec review", or to run the hard gates on a spec (spec checker, secret and PII scan, block parsing, ticket traceability, length ceiling), tier its risk (auth, migrations, data models, billing, public or breaking API changes) and require a human sign-off for a high-risk spec, run the bounded revision loop that hands fix blockers back to the author until the spec converges or the loop stops, pause to ask the user one concrete choice at a time (a decision finding, a stopped loop, a high-risk sign-off, a spec that fails the skim test) and resume with their answers, render the review summary the user reads before accepting, validate a reviewer's findings JSON or a review record, or count findings by rule across a repo's reviews (findings --stats) and propose graduating a repeated, mechanical rule into the spec checker or the gate config.
 ---
 
 # spec-review
 
 Reviews a spec before code is written: a one-page spec is cheaper to check than a thousand lines of generated diff. It reports findings; it never writes, edits or accepts the spec. Done means the hard gates and the risk step have run, the user has every result with its lines, every question the review raised has been asked and the user's answers are recorded, a high-risk spec has the user's own sign-off or is reported as not passing, every finding the review uses has passed the findings validator, and the user has the review summary.
 
-## Status (v0.6)
+## Status (v0.7)
 
-Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), the findings format with its validator (`findings`), the five advisory reviewers with their merge (`findings --merge`), the bounded revision loop with its verdict script (`converge`), and the human-in-the-loop pauses (`pause`), resuming after answers, and the review summary (`summary`). The step below is planned (`${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md`) and **not yet available**:
-
-| Step | Planned in |
-|---|---|
-| Graduating repeated findings (`findings --stats`) | v0.7 |
+Available: the hard gates (`gate`), risk tiering with the human sign-off (`gate --risk`, the review record and its validator `record`), the findings format with its validator (`findings`), the five advisory reviewers with their merge (`findings --merge`), the bounded revision loop with its verdict script (`converge`), the human-in-the-loop pauses (`pause`), resuming after answers, the review summary (`summary`), and graduating repeated findings (`findings --stats`). Every release in `${CLAUDE_PLUGIN_ROOT}/docs/spec-review/ROADMAP.md` is built.
 
 When the user asks to review a spec, the whole review runs end to end:
 
@@ -23,7 +19,7 @@ When the user asks to review a spec, the whole review runs end to end:
 4. When the verdict is `continue`, run the next pass of the [revision loop](#revision-loop), handing the author the fix blockers and the user's answers.
 5. When `pause` says to render the summary, run `summary` and show it.
 
-Never answer a question yourself, and never say which option you would pick. A review never reports a spec as ready to build: it reports what the gates, the risk step, the reviewers, the loop and the user's answers came to. If the user asks about graduating rules, say it isn't available yet.
+Never answer a question yourself, and never say which option you would pick. A review never reports a spec as ready to build: it reports what the gates, the risk step, the reviewers, the loop and the user's answers came to. [Graduating rules](#graduating-rules) is a separate step, run when the user asks which findings keep coming back, not part of a review.
 
 ## Core rules
 
@@ -62,6 +58,7 @@ Repo settings are optional, in `<repo>/.orca-kit/spec-review.yml` (the repo is t
 ticket_pattern: '\b[A-Z][A-Z0-9]+-[0-9]+\b'  # set = every spec must name a ticket
 max_words: 2000                             # length ceiling
 max_growth: 0.25                            # revision loop: most a spec may grow in one pass
+graduate_after: 3                           # findings --stats: specs a rule must be seen in to be proposed
 secret_patterns:                            # extra secret regexes
   - 'acme_[a-z0-9]{32}'
 risk_terms:                                 # replaces a risk's default terms
@@ -70,7 +67,7 @@ risk_paths:                                 # replaces a risk's default paths
   migration: ['*/migrations/*', '*/db/changes/*']
 ```
 
-Patterns are Python regexes; quote them in single quotes. Risk terms are lowercase words (a trailing `*` matches any ending) and risk paths are globs. `max_growth` is a share of the spec's words (loop.md). Any other key, or a value of the wrong type, is an error.
+Patterns are Python regexes; quote them in single quotes. Risk terms are lowercase words (a trailing `*` matches any ending) and risk paths are globs. `max_growth` is a share of the spec's words (loop.md). `graduate_after` is a whole number of at least 2 ([Graduating rules](#graduating-rules)). Any other key, or a value of the wrong type, is an error.
 
 ## Risk and sign-off
 
@@ -123,6 +120,17 @@ The review pauses to ask the user, with the evidence and the options, when a `de
 - **Summary.** When `pause` says `render the summary`, or the user ends the review, run `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/summary specs/<slug>.md` and show it as printed. It is rendered from the record: the gates, the risk tier and sign-off, the resolved and open findings, the questions and answers, and the pass history. Its last line states that the accepted spec is the single source of truth for code generation. Then leave acceptance to the user, through `orca-kit:spec` refine.
 - If `python3` isn't available, don't pause by hand: report the last pass's decision blockers as open and say the pauses and the summary didn't run.
 
+## Graduating rules
+
+Core rule 8: a structural mistake reviewers keep catching should become a deterministic rule. Run this when the user asks which findings keep recurring, or whether a rule should graduate; it reads every review in the repo and is never part of reviewing one spec.
+
+- **Run** `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings --stats [--repo ROOT]` (the repo defaults to the nearest directory above the current one with `.orca-kit/` or `.git`). It checks every `specs/reviews/*.json` with `record`, reports each invalid record with its problems and doesn't count it, then prints a table: per rule, its level, its Graduates value, its findings over every pass, and the number of specs it was seen in. It is deterministic and only reads files. Exit 0 when every record is valid, 1 or 2 when one isn't (it was reported and not counted), 2 for a usage error or invalid settings.
+- **What is proposed.** A rule is proposed only when its rubric row marks it a candidate (the Graduates column: `check` for the spec checker, `secret_patterns` or `risk_terms` for the gate config) **and** it was seen in at least `graduate_after` specs (default 3). The column is fixed in each agent's rubric, not judged per run: a `no` rule, such as `ambiguity.two-readings`, is a judgement call and is never proposed, however often it is seen. One spec reviewed many times counts once, so one noisy review can't make a proposal.
+- **Each proposal** (`graduate <n>: …`) gives the rule, its level, its counts, where it would be enforced, one example per spec (the record, pass, finding id, location and evidence), and, when the evidence shares a literal phrase across enough specs, a draft: the terms with their spec counts, plus a regex for the checker or a settings snippet for the config. Otherwise it says there is no draft.
+- **Show** the table and every proposal to the user as printed. Say what the draft would catch, and that it is a starting point: the terms come from the evidence, so the user should trim any that aren't the mistake (a word the specs merely share). Never present a proposal as decided.
+- **On the user's yes**, offer the rule as a **separate change**, never made during a review and never by a script: for this plugin, a PR touching `${CLAUDE_PLUGIN_ROOT}/skills/spec/check` (the `orca-kit:spec` skill's checker, with its tests); for a config target, an edit to the repo's `.orca-kit/spec-review.yml`, which the user reviews. Make it only if the user asks for it, in its own branch or commit. On a no, change nothing.
+- No script edits the checker, the settings, the agents or a record. Changing a rule's Graduates value is a change to its agent file, like any rubric change.
+
 ## Findings
 
 Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings.schema.json`:
@@ -161,6 +169,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 - It exits 0 when every finding is valid, 1 when any is rejected, and 2 for a usage error or a file that isn't a JSON array.
 - `--rules` lists the rules it checks.
 - `--merge <file> ...` combines reviewers' files into one validated, deduplicated array on stdout, with every drop reported on stderr; `reviewers.md` has the exact duplicate rule.
+- `--stats [--repo ROOT]` counts findings by rule across the repo's review records and prints graduation proposals ([Graduating rules](#graduating-rules)).
 - If `python3` isn't available, check each finding by hand against the list above and tell the user the validator didn't run.
 
 ## Non-goals
@@ -174,7 +183,7 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 ## Bundled files
 
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/gate`: the hard gates, the risk step (`gate --risk`) and the slicer's counts (`gate --counts`).
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings`: the findings validator and merge (`findings --merge`).
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings`: the findings validator, the merge (`findings --merge`) and the graduation counts and proposals (`findings --stats`).
 - `${CLAUDE_PLUGIN_ROOT}/agents/spec-review-*.md`: the five reviewer agents, invoked as `orca-kit:spec-review-<reviewer>`.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/reviewers.md`: the reviewers' context and rule keys, the merge's duplicate rule, the record's `passes`, and the seeded examples.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/examples/`: a small fake repo with six specs, each seeding one problem, and `expected.json` naming the reviewer and rule that should catch it.
@@ -186,4 +195,4 @@ Reviewers return a JSON array of findings in the format of `${CLAUDE_PLUGIN_ROOT
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/loop.md`: the revision loop: a pass, the hand-off to `orca-kit:spec` refine, the verdicts, the same-blocker rule, the bloat guard (`max_growth`) and the record's per-pass `words` and `gates`.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/risk.md`: the risk classifier's defaults and settings, the review record format, and how to record a sign-off.
 - `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/findings.schema.json`: the findings format as JSON Schema; the validator implements the same rules by hand, and its tests check the two agree.
-- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validators' tests and fixtures (`gate-*` fixtures are specs, `risk-*` fixtures are small repos with `specs/` and review records, `loop-*` fixtures add `previous/<slug>.md`, the spec before its last revision, and `pause-*` fixtures are loop fixtures with questions and answers, one per pause trigger); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.
+- `${CLAUDE_PLUGIN_ROOT}/skills/spec-review/tests/`: the gate's and validators' tests and fixtures (`gate-*` fixtures are specs, `risk-*` fixtures are small repos with `specs/` and review records, `loop-*` fixtures add `previous/<slug>.md`, the spec before its last revision, `pause-*` fixtures are loop fixtures with questions and answers, one per pause trigger, and `stats-*` fixtures are repos of review records for `findings --stats`); run `python3 -m unittest discover -s skills/spec-review/tests` from the plugin root.

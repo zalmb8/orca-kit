@@ -16,18 +16,18 @@ The prompt gives you `Spec:` (a path to `specs/<slug>.md`) and `Repo root:`. Not
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level. The Graduates column says whether repeated findings of a rule may be proposed as a deterministic check (`check` for the spec checker), or `no` for a judgement call; it never changes what you report:
 
-| Rule | Level | Report when |
-|---|---|---|
-| `ambiguity.weasel-word` | blocker | An AC, an edge-case row or a `New:` contract uses a word with no checkable meaning: "fast", "quickly", "gracefully", "as appropriate", "reasonable", "user-friendly", "robust", "properly", "etc.", "and so on", "if needed", "large" without a number. |
-| `ambiguity.missing-error-state` | blocker | A behavior has a failure path the spec never states: an input, file, network or state failure the feature plainly meets (bad or unparseable input, a missing or unreadable resource, a write that fails partway, a timeout) with no AC or edge-case row saying what happens. |
-| `ambiguity.untestable-ac` | blocker | An AC whose *then* can't be observed or checked by its `verify:` command, for a reason other than a weasel word: it states internal state, intent or a feeling, or the verify command can't see the outcome. |
-| `ambiguity.two-readings` | blocker | A sentence that states behavior has two valid readings that lead to different behavior, and the spec gives no way to choose between them. |
-| `ambiguity.vague-prose` | nit | A weasel word in context prose no AC depends on: the Goal's why, Context, a Non-goal's reason, a Decision Log `why:`. |
-| `ambiguity.needs-table` | nit | Every case is stated, but spread across prose (three or more combinations of inputs, flags or states, or a sequence of states), where a decision table or state machine would be easier to check. If a case is missing or contradictory, it is `missing-error-state` or `two-readings` instead. |
-| `ambiguity.unstated-detail` | nit | An AC fixes everything its test checks (exit code, which files change, what stdout holds) but leaves a detail open that any reasonable choice satisfies, such as the exact wording of an error message. |
-| `ambiguity.compound-failure` | nit | A failure that can only happen while handling another, stated failure (the restore after a failed save also fails) has no stated behavior. |
+| Rule | Level | Graduates | Report when |
+|---|---|---|---|
+| `ambiguity.weasel-word` | blocker | check | An AC, an edge-case row or a `New:` contract uses a word with no checkable meaning: "fast", "quickly", "gracefully", "as appropriate", "reasonable", "user-friendly", "robust", "properly", "etc.", "and so on", "if needed", "large" without a number. |
+| `ambiguity.missing-error-state` | blocker | no | A behavior has a failure path the spec never states: an input, file, network or state failure the feature plainly meets (bad or unparseable input, a missing or unreadable resource, a write that fails partway, a timeout) with no AC or edge-case row saying what happens. |
+| `ambiguity.untestable-ac` | blocker | no | An AC whose *then* can't be observed or checked by its `verify:` command, for a reason other than a weasel word: it states internal state, intent or a feeling, or the verify command can't see the outcome. |
+| `ambiguity.two-readings` | blocker | no | A sentence that states behavior has two valid readings that lead to different behavior, and the spec gives no way to choose between them. |
+| `ambiguity.vague-prose` | nit | check | A weasel word in context prose no AC depends on: the Goal's why, Context, a Non-goal's reason, a Decision Log `why:`. |
+| `ambiguity.needs-table` | nit | no | Every case is stated, but spread across prose (three or more combinations of inputs, flags or states, or a sequence of states), where a decision table or state machine would be easier to check. If a case is missing or contradictory, it is `missing-error-state` or `two-readings` instead. |
+| `ambiguity.unstated-detail` | nit | no | An AC fixes everything its test checks (exit code, which files change, what stdout holds) but leaves a detail open that any reasonable choice satisfies, such as the exact wording of an error message. |
+| `ambiguity.compound-failure` | nit | no | A failure that can only happen while handling another, stated failure (the restore after a failed save also fails) has no stated behavior. |
 
 Tiebreaks, so the same problem always gets the same rule: a vague word in an AC, edge-case row or `New:` contract is `weasel-word`, even when it also makes the AC untestable, and the same word in context prose is `vague-prose`; a first-order failure path that isn't stated at all is `missing-error-state`, a failure inside a failure handler is `compound-failure`, and neither is `two-readings`. Report each problem once, under one rule, at the line where it is clearest.
 

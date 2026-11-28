@@ -1,0 +1,66 @@
+{
+  "spec": "rename-todo",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "decision",
+          "rule": "ambiguity.two-readings",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 28,
+            "ref": "AC-2"
+          },
+          "evidence": "the list is sorted by date",
+          "concrete_question": "Which order should the list use?",
+          "suggested_fix": "(a) Sort by due date; or (b) keep insertion order.",
+          "risk": null
+        },
+        {
+          "id": "security-1",
+          "reviewer": "security",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "security.trust-boundary",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 32,
+            "ref": "AC-3"
+          },
+          "evidence": "the title is passed to the shell",
+          "concrete_question": "How is the title kept from reaching the shell?",
+          "suggested_fix": "Pass the title as an argument, never through a shell.",
+          "risk": null
+        },
+        {
+          "id": "architecture-1",
+          "reviewer": "architecture",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "architecture.codebase-drift",
+          "location": {
+            "section": "Interfaces & Data Contracts",
+            "line": 20,
+            "ref": null
+          },
+          "evidence": "writes the store file directly",
+          "concrete_question": "Should the command go through store.ts like the others?",
+          "suggested_fix": "Read and write the store through src/store.ts.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 3,
+      "words": 640,
+      "gates": "passed"
+    }
+  ]
+}

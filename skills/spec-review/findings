@@ -4,12 +4,18 @@
 Usage:
   findings <findings.json> [<findings.json> ...]
   findings --merge <findings.json> [<findings.json> ...]
+  findings --stats [--repo ROOT]
   findings --rules
 
   --merge       Validate every file, then print one JSON array on stdout: the
                 valid findings of all the files, in order, deduplicated
                 (below). Everything else goes to stderr. Used to combine the
                 five reviewers' outputs into one review pass (v0.4).
+  --stats       Count findings by rule across every specs/reviews/*.json of
+                the repo, and propose graduating repeated, mechanical rules
+                (below; v0.7).
+  --repo ROOT   With --stats: the repo. Default: the nearest directory at or
+                above the current one with .orca-kit/ or .git.
   --rules       List the rules each finding is checked against, and exit.
 
 A findings file is a JSON array of finding objects, in the format of
@@ -58,7 +64,40 @@ then one line:
 The exit code is the worst of the files' (0, 1 or 2), or 1 for an id clash;
 stdout is always a valid findings array.
 
-Python 3 standard library only; no install step.
+--stats. Every specs/reviews/*.json under the repo is checked with the
+record validator (`record`), in file-name order. A record it rejects is
+reported, with record's own problem lines, then
+  <file>: not counted: the record isn't valid
+and none of its findings is counted. Every pass of every valid record is
+counted (a record holds one review, since a fresh review replaces its
+passes; the last pass alone would miss every blocker the loop fixed). Each
+rule gets two counts: its findings, and the specs it was seen in. The specs
+count is the one that matters: one spec reviewed many times, or one noisy
+pass, is still one spec. A table follows, most specs first, then most
+findings, then by rule:
+  rule                   level    graduates        findings  specs
+  ambiguity.weasel-word  blocker  check                   5      3
+
+A rule is proposed when its rubric row marks it a graduation candidate (the
+Graduates column: `check`, the spec checker; `secret_patterns` or
+`risk_terms`, the gate config) and it was seen in at least graduate_after
+specs (.orca-kit/spec-review.yml, default 3). A rule marked `no` is a
+judgement call and is never proposed, however often it is seen. Each
+proposal is
+  graduate <n>: <rule> (<level>): seen in <s> specs (<slugs>), <f> findings; enforce in <where>
+  example: <record> pass <p>, <id>, <section> line <l> <ref>: "<evidence>"
+(one example per spec: its first finding of the rule), then a draft check
+when the evidence shows a literal pattern: the phrases of 1 to 3 words the
+evidence of at least graduate_after specs shares (not only common words,
+no digits, none containing a shorter such phrase), as a regex for the
+checker or a list for the config. Otherwise a `draft: none` line. A draft
+is a starting point for the user, never applied: no script changes the
+checker, the config or the agents. Last line:
+  stats: <r> records counted (<p> passes, <f> findings), <i> not counted; <k> proposals (graduate_after <n>)
+Exit 0 when every record is valid, else the worst record's exit code (1 a
+rule, 2 not JSON); 2 for a usage error or an invalid settings file.
+
+Python 3 standard library only; no install step. No mode writes a file.
 """
 
 import glob
@@ -121,16 +160,25 @@ MISSING_FIX = {
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 AGENTS_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "agents"))
-RUBRIC_HEADER_RE = re.compile(r"^\| Rule \| Level \| Report when \|$", re.M)
-RUBRIC_ROW_RE = re.compile(r"^\| `([a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*)` \| (blocker|nit) \| .+ \|$")
+# v0.7 adds a Graduates column; a table without it (v0.5) still parses, and
+# then none of its rules is a graduation candidate.
+RUBRIC_HEADER_RE = re.compile(r"^\| Rule \| Level \| (?:Graduates \| )?Report when \|$", re.M)
+RULE_KEY = r"[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*"
+RUBRIC_ROW_RE = re.compile(r"^\| `(%s)` \| (blocker|nit) \| .+ \|$" % RULE_KEY)
+# Graduates: where a repeated finding of the rule would be enforced as a
+# deterministic rule (v0.7, `--stats`), or `no` for a judgement call. Only a
+# rule whose detection could be a string, pattern or structure check is
+# marked; the marker is read here, never decided per finding.
+GRADUATES = ("no", "check", "secret_patterns", "risk_terms")
+RUBRIC_ROW_GRADUATES_RE = re.compile(r"^\| `(%s)` \| (blocker|nit) \| (%s) \| .+ \|$" % (RULE_KEY, "|".join(GRADUATES)))
 
 
 class RuleTableError(Exception):
     pass
 
 
-def read_rule_table(agents_dir=AGENTS_DIR):
-    """{rule: level} from every agents/spec-review-*.md rubric. Raises RuleTableError."""
+def read_rule_rows(agents_dir=AGENTS_DIR):
+    """{rule: (level, graduates)} from every agents/spec-review-*.md rubric. Raises RuleTableError."""
     table = {}
     paths = sorted(glob.glob(os.path.join(agents_dir, "spec-review-*.md")))
     if not paths:
@@ -143,25 +191,49 @@ def read_rule_table(agents_dir=AGENTS_DIR):
         except (OSError, UnicodeDecodeError) as e:
             raise RuleTableError("can't read %s (%s)" % (path, e))
         m = re.search(r"^## Rubric\n(.*?)(?=^## |\Z)", text, re.S | re.M)
-        if not m or not RUBRIC_HEADER_RE.search(m.group(1)):
-            raise RuleTableError("%s has no `| Rule | Level | Report when |` table under ## Rubric" % path)
+        header = RUBRIC_HEADER_RE.search(m.group(1)) if m else None
+        if not header:
+            raise RuleTableError("%s has no `| Rule | Level | Graduates | Report when |` table under ## Rubric" % path)
+        with_graduates = "Graduates" in header.group(0)
         rows = 0
         for line in m.group(1).split("\n"):
             if not line.startswith("| `"):
                 continue
-            row = RUBRIC_ROW_RE.match(line)
-            if not row:
-                raise RuleTableError("%s: rubric row %r isn't `| `<rule>` | blocker or nit | <when> |`" % (path, line[:60]))
-            rule, level = row.groups()
+            if with_graduates:
+                row = RUBRIC_ROW_GRADUATES_RE.match(line)
+                if not row:
+                    raise RuleTableError("%s: rubric row %r isn't `| `<rule>` | blocker or nit | %s | <when> |`" % (
+                        path, line[:60], " or ".join(GRADUATES)))
+                rule, level, graduates = row.groups()
+            else:
+                row = RUBRIC_ROW_RE.match(line)
+                if not row:
+                    raise RuleTableError("%s: rubric row %r isn't `| `<rule>` | blocker or nit | <when> |`" % (path, line[:60]))
+                (rule, level), graduates = row.groups(), "no"
             if not rule.startswith(reviewer + "."):
                 raise RuleTableError("%s: rule %s isn't prefixed with %s." % (path, rule, reviewer))
             if rule in table:
                 raise RuleTableError("%s: rule %s is listed twice" % (path, rule))
-            table[rule] = level
+            table[rule] = (level, graduates)
             rows += 1
         if not rows:
             raise RuleTableError("%s: the rubric table has no rules" % path)
     return table
+
+
+def read_rule_table(agents_dir=AGENTS_DIR):
+    """{rule: level} from every agents/spec-review-*.md rubric. Raises RuleTableError."""
+    return dict((rule, level) for rule, (level, _) in read_rule_rows(agents_dir).items())
+
+
+_RULE_ROWS = None
+
+
+def rule_rows():
+    global _RULE_ROWS
+    if _RULE_ROWS is None:
+        _RULE_ROWS = read_rule_rows()
+    return _RULE_ROWS
 
 
 _RULE_TABLE = None
@@ -170,7 +242,7 @@ _RULE_TABLE = None
 def rule_table():
     global _RULE_TABLE
     if _RULE_TABLE is None:
-        _RULE_TABLE = read_rule_table()
+        _RULE_TABLE = dict((rule, level) for rule, (level, _) in rule_rows().items())
     return _RULE_TABLE
 
 
@@ -180,6 +252,7 @@ def rule_of(field):
 
 USAGE = ("usage: findings <findings.json> [<findings.json> ...]\n"
          "       findings --merge <findings.json> [<findings.json> ...]\n"
+         "       findings --stats [--repo ROOT]\n"
          "       findings --rules")
 
 
@@ -459,24 +532,264 @@ def merge(paths):
     return worst, kept, lines
 
 
+# ---------------------------------------------------------------------------
+# --stats: count findings by rule across a repo's review records, and propose
+# graduating a repeated, mechanical rule into a deterministic check (v0.7).
+# Nothing here writes a file: proposals are printed for the user to decide on.
+# ---------------------------------------------------------------------------
+
+REVIEWS_GLOB = os.path.join("specs", "reviews", "*.json")
+
+# Where each Graduates value would be enforced.
+TARGETS = {
+    "check": "the spec checker (orca-kit skills/spec/check), as a new rule",
+    "secret_patterns": "the gate config (.orca-kit/spec-review.yml), secret_patterns, checked by the secrets gate",
+    "risk_terms": "the gate config (.orca-kit/spec-review.yml), risk_terms, read by gate --risk",
+}
+
+# Words a draft term may not consist of alone: they appear in any sentence.
+STOPWORDS = frozenset("""
+a an the and or but nor if then when while given of to in on at for with by from into onto as is are was were be
+been being it its this that these those there here not no so do does did should must will would can could may
+might shall has have had i we you they he she them us our your their his her what which who whom all any each
+every some such only than too very also just
+""".split())
+WORD_RE = re.compile(r"[a-z0-9]+(?:['’-][a-z0-9]+)*")
+MAX_PHRASE = 3
+
+
+def load_sibling(name):
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("spec_review_stats_" + name, os.path.join(HERE, name))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def find_root(start):
+    """The nearest directory at or above start with .orca-kit/ or .git, else start."""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(d, ".orca-kit")) or os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return os.path.abspath(start)
+        d = parent
+
+
+def read_records(root):
+    """(worst exit code, problem lines, [(display path, record)] of the valid records), sorted by path."""
+    record = load_sibling("record")
+    worst, lines, records = 0, [], []
+    for path in sorted(glob.glob(os.path.join(root, REVIEWS_GLOB))):
+        shown = os.path.relpath(path, root).replace(os.sep, "/")
+        code, out, data = record.check_file(path)
+        if data is None:
+            worst = max(worst, code)
+            for line in out:
+                lines.append(shown + line[len(path):] if line.startswith(path) else line)
+            lines.append("%s: not counted: the record isn't valid" % shown)
+            continue
+        records.append((shown, data))
+    return worst, lines, records
+
+
+def count(records):
+    """{rule: {"findings": n, "specs": [spec, ...], "examples": [(path, pass, finding)]}} over every pass.
+
+    `examples` holds each spec's first finding of the rule, sorted by record path.
+
+    Every pass of every record is counted (a record holds one review: a fresh
+    review replaces its passes), and so is the set of specs a rule was seen
+    in, which is what the threshold reads: one spec reviewed many times, or
+    one noisy pass, is still one spec.
+    """
+    out = {}
+    for shown, data in records:
+        for n, p in enumerate(data.get("passes") or [], 1):
+            for f in p["findings"]:
+                c = out.setdefault(f["rule"], {"findings": 0, "specs": [], "examples": []})
+                c["findings"] += 1
+                if data["spec"] not in c["specs"]:
+                    # One example per spec: its first finding of the rule.
+                    c["specs"].append(data["spec"])
+                    c["examples"].append((shown, n, f))
+    for c in out.values():
+        c["specs"].sort()
+        c["examples"].sort(key=lambda e: e[0])
+    return out
+
+
+def evidence_by_spec(records, rule):
+    """{spec: [evidence, ...]} of every finding of the rule, in record and pass order."""
+    out = {}
+    for _, data in records:
+        for p in data.get("passes") or []:
+            for f in p["findings"]:
+                if f["rule"] == rule:
+                    out.setdefault(data["spec"], []).append(f["evidence"])
+    return out
+
+
+def phrases(text):
+    words = WORD_RE.findall(text.lower())
+    out = set()
+    for size in range(1, MAX_PHRASE + 1):
+        for i in range(len(words) - size + 1):
+            gram = words[i:i + size]
+            if all(w in STOPWORDS for w in gram) or any(ch.isdigit() for w in gram for ch in w):
+                continue
+            out.add(" ".join(gram))
+    return out
+
+
+def draft_terms(by_spec, threshold):
+    """[(term, specs)]: the literal phrases (1 to 3 words) the evidence of at least threshold specs shares.
+
+    A phrase made only of common words, or holding a digit, isn't a term, and
+    a phrase that contains a shorter term is dropped, since the term already
+    matches wherever it does. Sorted by specs, most first, then by term.
+    """
+    seen = {}
+    for spec, texts in by_spec.items():
+        for gram in set().union(*(phrases(t) for t in texts)):
+            seen.setdefault(gram, set()).add(spec)
+    kept = sorted(g for g, specs in seen.items() if len(specs) >= threshold)
+    terms = [g for g in kept
+             if not any(o != g and re.search(r"(?:^| )%s(?: |$)" % re.escape(o), g) for o in kept)]
+    return sorted(((t, len(seen[t])) for t in terms), key=lambda ts: (-ts[1], ts[0]))
+
+
+def term_regex(terms, ignore_case=True):
+    body = "|".join(r"\s+".join(re.escape(w) for w in t.split(" ")) for t in terms)
+    return ("(?i)" if ignore_case else "") + r"\b(?:%s)\b" % body
+
+
+def yaml_quote(text):
+    return "'%s'" % text.replace("'", "''")
+
+
+def draft_lines(rule, level, target, terms, findings, config, gate):
+    """The draft check's lines for one proposal (indented), or a line saying there is no literal pattern."""
+    if not terms:
+        return ["  draft: none; the evidence shares no literal phrase across enough specs, so write the check from the examples"]
+    out = ["  draft terms: " + ", ".join("%s (%d spec%s)" % (json.dumps(t), n, "" if n == 1 else "s") for t, n in terms)]
+    words = [t for t, _ in terms]
+    if target == "check":
+        out.append("  draft regex: " + yaml_quote(term_regex(words)))
+        where = "an AC, edge-case row or New: contract" if rule == "ambiguity.weasel-word" else "the spec's text"
+        out.append("  draft rule: a checker %s when %s matches the regex" % ("error" if level == "blocker" else "warning", where))
+    elif target == "secret_patterns":
+        out.append("  draft config, added to any secret_patterns the repo has:")
+        out.append("    secret_patterns:")
+        out.extend("      - " + yaml_quote(p) for p in list(config["secret_patterns"]) + [term_regex(words, ignore_case=False)])
+    elif target == "risk_terms":
+        named = [f["risk"] for f in findings if f["risk"] is not None]
+        if not named:
+            out.append("  draft config: none; no finding names a risk, so the terms have no risk_terms entry to join")
+            return out
+        risk = max(sorted(set(named), key=gate.RISKS.index), key=named.count)
+        current = config["risk_terms"].get(risk, gate.DEFAULT_RISK_TERMS[risk])
+        # A term the current list already matches (backfill under 'backfill*') adds nothing.
+        new = [t for t in words if gate.TERM_RE.match(t) and not any(gate.term_regex(c).search(t) for c in current)]
+        if not new:
+            out.append("  draft config: none; risk_terms.%s already matches every term" % risk)
+            return out
+        out.append("  draft config (risk_terms replaces a risk's defaults, so the list keeps the current terms):")
+        out.append("    risk_terms:")
+        out.append("      %s: [%s]" % (risk, ", ".join(yaml_quote(t) for t in list(current) + new)))
+    return out
+
+
+def stats_report(records, rows, threshold, config=None, gate=None):
+    """(table lines, proposal lines, proposals) for valid records. Pure and deterministic."""
+    counts = count(records)
+    order = sorted(counts, key=lambda r: (-len(counts[r]["specs"]), -counts[r]["findings"], r))
+    width = max([len("rule")] + [len(r) for r in order])
+    table = ["%-*s  %-7s  %-15s  %8s  %5s" % (width, "rule", "level", "graduates", "findings", "specs")]
+    for r in order:
+        level, target = rows[r]
+        table.append("%-*s  %-7s  %-15s  %8d  %5d" % (width, r, level, target, counts[r]["findings"], len(counts[r]["specs"])))
+    proposals = [r for r in order if rows[r][1] != "no" and len(counts[r]["specs"]) >= threshold]
+    lines = []
+    for n, r in enumerate(proposals, 1):
+        level, target = rows[r]
+        c = counts[r]
+        lines.append("graduate %d: %s (%s): seen in %d specs (%s), %d finding%s; enforce in %s" % (
+            n, r, level, len(c["specs"]), ", ".join(c["specs"]), c["findings"], "" if c["findings"] == 1 else "s",
+            TARGETS[target]))
+        for shown, pass_no, f in c["examples"]:
+            loc = f["location"]
+            where = loc["section"] + ("" if loc["line"] is None else " line %d" % loc["line"]) + \
+                ("" if loc["ref"] is None else " " + loc["ref"])
+            lines.append("  example: %s pass %d, %s, %s: %s" % (shown, pass_no, f["id"], where, json.dumps(f["evidence"], ensure_ascii=False)))
+        findings = [f for _, data in records for p in data.get("passes") or [] for f in p["findings"] if f["rule"] == r]
+        terms = draft_terms(evidence_by_spec(records, r), threshold)
+        lines.extend(draft_lines(r, level, target, terms, findings, config, gate))
+    return table, lines, proposals
+
+
+def stats(root):
+    """(exit code, output lines) for `--stats`."""
+    gate = load_sibling("gate")
+    try:
+        config, _ = gate.load_config(root)
+    except gate.ConfigError as e:
+        return 2, ["%s:%d: error [config] settings: %s. Fix: Correct the settings file; `gate --help` shows the format." % (
+            gate.CONFIG_PATH.replace(os.sep, "/"), e.line or 1, e.message.rstrip("."))]
+    worst, lines, records = read_records(root)
+    threshold = config["graduate_after"]
+    table, proposal_lines, proposals = stats_report(records, rule_rows(), threshold, config, gate)
+    passes = sum(len(d.get("passes") or []) for _, d in records)
+    total = sum(len(p["findings"]) for _, d in records for p in d.get("passes") or [])
+    lines.extend(table)
+    lines.extend(proposal_lines)
+    not_counted = sum(1 for line in lines if line.endswith(": not counted: the record isn't valid"))
+    lines.append("stats: %d record%s counted (%d pass%s, %d finding%s), %d not counted; %d proposal%s (graduate_after %d)" % (
+        len(records), "" if len(records) == 1 else "s", passes, "" if passes == 1 else "es", total,
+        "" if total == 1 else "s", not_counted, len(proposals), "" if len(proposals) == 1 else "s", threshold))
+    return worst, lines
+
+
 def parse_args(argv):
-    opts = {"mode": "check", "paths": []}
-    for i, arg in enumerate(argv):
+    opts = {"mode": "check", "paths": [], "repo": None}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
         if arg in ("-h", "--help"):
             opts["mode"] = "help"
             return opts
         if arg == "--rules":
             opts["mode"] = "rules"
             return opts
-        if arg == "--merge":
-            opts["mode"] = "merge"
-            continue
-        if arg == "--":
+        if arg in ("--merge", "--stats"):
+            if opts["mode"] not in ("check", arg[2:]):
+                raise UsageError("--merge and --stats can't be used together")
+            opts["mode"] = arg[2:]
+        elif arg == "--repo" or arg.startswith("--repo="):
+            if arg == "--repo":
+                if i + 1 >= len(argv):
+                    raise UsageError("--repo needs a directory")
+                i += 1
+                opts["repo"] = argv[i]
+            else:
+                opts["repo"] = arg[len("--repo="):]
+        elif arg == "--":
             opts["paths"].extend(argv[i + 1:])
             break
-        if arg.startswith("-") and arg != "-":
+        elif arg.startswith("-") and arg != "-":
             raise UsageError("unknown option %r" % arg)
-        opts["paths"].append(arg)
+        else:
+            opts["paths"].append(arg)
+        i += 1
+    if opts["mode"] == "stats":
+        if opts["paths"]:
+            raise UsageError("--stats reads every specs/reviews/*.json in the repo; give the repo with --repo, not files")
+        return opts
+    if opts["repo"] is not None:
+        raise UsageError("--repo is only for --stats")
     if not opts["paths"]:
         raise UsageError("no findings files given")
     return opts
@@ -506,7 +819,20 @@ def main(argv=None):
         print("rule table (agents/spec-review-*.md):")
         for rule, level in sorted(rule_table().items()):
             print("  %-34s %s" % (rule, level))
+        print("graduation candidates (the Graduates column, read by --stats):")
+        for rule, (_, target) in sorted(rule_rows().items()):
+            if target != "no":
+                print("  %-34s %s" % (rule, target))
         return 0
+    if opts["mode"] == "stats":
+        root = opts["repo"] if opts["repo"] is not None else find_root(os.getcwd())
+        if not os.path.isdir(root):
+            sys.stderr.write("findings: --repo %s isn't a directory\n%s\n" % (root, USAGE))
+            return 2
+        code, lines = stats(os.path.abspath(root))
+        for line in lines:
+            print(line)
+        return code
     if opts["mode"] == "merge":
         code, kept, lines = merge(opts["paths"])
         for line in lines:

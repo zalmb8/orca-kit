@@ -16,12 +16,12 @@ The prompt gives you `Spec:` (a path to `specs/<slug>.md`), `Repo root:`, and `C
 
 ## Rubric
 
-Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level:
+Report only what these rules cover. Each finding's `rule` is one of these keys, exactly, and its `severity` is the rule's level. The Graduates column says whether repeated findings of a rule may be proposed as a deterministic check (`check` for the spec checker), or `no` for a judgement call; it never changes what you report:
 
-| Rule | Level | Report when |
-|---|---|---|
-| `slicer.oversized` | blocker | The spec is over either size anchor: **more than 10 ACs**, or **more than 75% of the word ceiling**; or under them but its ACs cover three or more separate commands or areas of the code. |
-| `slicer.independent-parts` | nit | The spec is within the anchors but bundles two changes that could each be built, tested and shipped alone. |
+| Rule | Level | Graduates | Report when |
+|---|---|---|---|
+| `slicer.oversized` | blocker | no | The spec is over either size anchor: **more than 10 ACs**, or **more than 75% of the word ceiling**; or under them but its ACs cover three or more separate commands or areas of the code. |
+| `slicer.independent-parts` | nit | no | The spec is within the anchors but bundles two changes that could each be built, tested and shipped alone. |
 
 Tiebreaks, so the same problem always gets the same rule: report at most one finding per spec. A spec that is `oversized` gets that rule, even when it also has independent parts; `independent-parts` is only for a spec within the anchors. A spec that is within the anchors and is one change gets no finding: return `[]`.
 

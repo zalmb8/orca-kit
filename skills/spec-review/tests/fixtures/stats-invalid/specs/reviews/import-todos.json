@@ -1,0 +1,34 @@
+{
+  "spec": "import-todos",
+  "risk": {
+    "tier": "low",
+    "risks": [],
+    "reasons": []
+  },
+  "sign_off": null,
+  "passes": [
+    {
+      "findings": [
+        {
+          "id": "ambiguity-1",
+          "reviewer": "ambiguity",
+          "severity": "blocker",
+          "kind": "fix",
+          "rule": "ambiguity.weasel-word",
+          "location": {
+            "section": "Behavior & Edge Cases",
+            "line": 33,
+            "ref": "AC-2"
+          },
+          "evidence": "then a bad file is handled gracefully",
+          "concrete_question": "What exactly does the command do, and within what limit?",
+          "suggested_fix": "Replace the vague word with the exit code, message and limit it stands for.",
+          "risk": null
+        }
+      ],
+      "open_blockers": 0,
+      "words": 640,
+      "gates": "passed"
+    }
+  ]
+}

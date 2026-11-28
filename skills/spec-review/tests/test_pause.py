@@ -801,14 +801,16 @@ class Docs(unittest.TestCase):
         with open(os.path.join(*parts), encoding="utf-8") as f:
             return f.read()
 
-    def test_skill_names_the_scripts_and_marks_v07_not_available(self):
+    def test_skill_names_the_scripts_and_lists_them_available(self):
+        # v0.7 made every release available; the status names the pauses and the summary as built.
         skill = self.read(SKILL_DIR, "SKILL.md")
         for name in ("pause", "summary", "pauses.md"):
             self.assertIn(name, skill)
-        self.assertIn("## Status (v0.6)", skill)
-        status = skill.split("## Status (v0.6)", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("not yet available", status)
-        self.assertIn("v0.7", status)
+        self.assertIn("## Status (v0.7)", skill)
+        status = skill.split("## Status (v0.7)", 1)[1].split("\n## ", 1)[0]
+        self.assertNotIn("not yet available", status)
+        for name in ("`pause`", "`summary`"):
+            self.assertIn(name, status)
         self.assertNotIn("| v0.6 |", status)
 
     def test_pauses_md_names_every_trigger_choice_and_option(self):
@@ -825,10 +827,11 @@ class Docs(unittest.TestCase):
         text = self.read(PLUGIN_ROOT, "docs", "spec-review", "ROADMAP.md")
         section = text.split("### v0.6: Human-in-the-loop pauses ✅", 1)[1].split("\n### ", 1)[0]
         self.assertNotIn("- [ ]", section)
-        self.assertIn("### v0.7: Graduating rules\n", text)
 
     def test_plugin_version(self):
-        self.assertEqual(json.loads(self.read(PLUGIN_ROOT, ".claude-plugin", "plugin.json"))["version"], "0.14.0")
+        # v0.6 shipped as 0.14.0; later releases bump it (test_stats.py pins v0.7's).
+        version = json.loads(self.read(PLUGIN_ROOT, ".claude-plugin", "plugin.json"))["version"]
+        self.assertGreaterEqual(tuple(int(n) for n in version.split(".")), (0, 14, 0))
 
 
 if __name__ == "__main__":
