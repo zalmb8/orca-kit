@@ -1,11 +1,22 @@
 {
   "spec": "oscillation-by-finding-location",
   "risk": {
-    "tier": "low",
-    "risks": [],
-    "reasons": []
+    "tier": "high",
+    "risks": [
+      "breaking-change"
+    ],
+    "reasons": [
+      "specs/oscillation-by-finding-location.md:46: warning [risk.breaking-change] Interfaces & Data Contracts: finding blast-radius-1 (blocker fix from blast-radius) raised it in pass 1, and it stays raised for this review. Fix: Show the user these risks and reasons; a high-risk spec needs their sign-off in specs/reviews/oscillation-by-finding-location.json.",
+      "specs/oscillation-by-finding-location.md:47: warning [risk.breaking-change] Interfaces & Data Contracts: finding blast-radius-3 (blocker fix from blast-radius) raised it in pass 1, and it stays raised for this review. Fix: Show the user these risks and reasons; a high-risk spec needs their sign-off in specs/reviews/oscillation-by-finding-location.json."
+    ]
   },
-  "sign_off": null,
+  "sign_off": {
+    "signed_off_by": "zalmb8",
+    "signed_off_on": "2026-11-27",
+    "risks": [
+      "breaking-change"
+    ]
+  },
   "passes": [
     {
       "findings": [
@@ -225,7 +236,7 @@
           "risk": null
         }
       ],
-      "open_blockers": 1,
+      "open_blockers": 0,
       "words": 1929,
       "gates": "passed"
     }
